@@ -5,6 +5,11 @@ import urllib.request
 from pathlib import Path
 from typing import Protocol
 
+from youtube_to_wechat.article_prepare import (
+    extract_digest,
+    extract_wechat_title,
+    strip_leading_title_block,
+)
 from youtube_to_wechat.wechat import (
     WechatError,
     _markdown_to_html,
@@ -29,18 +34,11 @@ class WechatDraftPublisher:
             return
 
         text = article_path.read_text(encoding="utf-8")
-        title_match = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
-        title = title_match.group(1).strip() if title_match else article_path.parent.name
-
-        digest_match = re.search(r"^> 摘要：(.+)$", text, re.MULTILINE)
-        if digest_match:
-            digest = digest_match.group(1).strip()
-        else:
-            body_lines = [l for l in text.splitlines() if l.strip() and not l.startswith("#")]
-            digest = " ".join(body_lines)[:110]
+        title = extract_wechat_title(text, article_path)
+        digest = extract_digest(text)
 
         try:
-            content = _markdown_to_html(text)
+            content = _markdown_to_html(strip_leading_title_block(text))
             required = require_env(env, ["WECHAT_APPID", "WECHAT_APPSECRET", "WECHAT_AUTHOR"])
             token = get_access_token(required["WECHAT_APPID"], required["WECHAT_APPSECRET"])
             thumb_media_id = upload_permanent_thumb(token, cover_path)

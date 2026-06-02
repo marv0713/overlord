@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 import argparse
-import html
 import json
-import re
 import sys
 from pathlib import Path
 
+from youtube_to_wechat.article_prepare import (
+    extract_digest,
+    extract_wechat_title,
+    strip_leading_title_block,
+)
 from youtube_to_wechat.wechat import (
     WechatError,
     add_draft,
@@ -26,7 +29,7 @@ def _read_article(article_path: Path, access_token: str = "") -> tuple[str, str,
     if article_path.suffix.lower() == ".html":
         content = text
     else:
-        content = _markdown_to_html(text)
+        content = _markdown_to_html(strip_leading_title_block(text))
 
     # NEW: Find and upload local images to WeChat
     if access_token:
@@ -61,30 +64,11 @@ def _replace_local_images(content: str, base_dir: Path, access_token: str) -> st
 
 
 def _extract_title(text: str, article_path: Path) -> str:
-    import re
-    # Search for the first # H1 heading in the entire text
-    match = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
-    if match:
-        return match.group(1).strip()
-
-    # Fallback to search for <h1> tag
-    h1_match = re.search(r"<h1>(.+?)</h1>", text, re.IGNORECASE)
-    if h1_match:
-        return h1_match.group(1).strip()
-
-    return article_path.parent.name
+    return extract_wechat_title(text, article_path)
 
 
 def _extract_digest(text: str) -> str:
-    import re
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("> 摘要："):
-            return stripped[len("> 摘要：") :].strip()
-    plain = re.sub(r"<[^>]+>", " ", text)
-    plain = re.sub(r"[#>*_`\\-]+", " ", plain)
-    plain = re.sub(r"\s+", " ", plain).strip()
-    return plain[:110] or "AI 提炼的投研内容草稿。"
+    return extract_digest(text)
 
 
 def _source_url(article_path: Path) -> str:
