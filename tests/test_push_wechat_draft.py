@@ -40,9 +40,11 @@ No.012 | Sven Carlin 价值投资象限：拆解高风险与被低估的“公�
             article_path = Path(temp_dir) / "article.md"
             article_path.write_text(text, encoding="utf-8")
 
-            title, _digest, content = _read_article(article_path)
+            title, digest, content = _read_article(article_path)
 
         self.assertEqual(title, "No.012 | Sven 价值投资象限")
+        self.assertNotIn("AMZN、HPQ、CHTR", digest)
+        self.assertIn("管理层正在疯狂抛售", digest)
         self.assertNotIn("<h1", content)
         self.assertNotIn("AMZN、HPQ、CHTR", content)
         self.assertNotIn("拆解高风险与被低估", content)

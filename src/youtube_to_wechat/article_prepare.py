@@ -28,7 +28,7 @@ def extract_digest(text: str) -> str:
     digest = _extract_prefixed_line(text, "> 摘要：")
     if digest:
         return digest
-    plain = re.sub(r"<[^>]+>", " ", text)
+    plain = re.sub(r"<[^>]+>", " ", strip_leading_title_block(text))
     plain = re.sub(r"[#>*_`\\-]+", " ", plain)
     plain = re.sub(r"\s+", " ", plain).strip()
     return plain[:110] or "AI 提炼的投研内容草稿。"
