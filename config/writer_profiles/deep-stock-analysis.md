@@ -1,6 +1,9 @@
 # deep-stock-analysis
 
-用于单公司投研视频，例如 Unrivaled Investing 或 Sven Carlin 的个股拆解。
+用于**单公司**投研视频——博主系统性拆解某一家公司的财务、竞争格局、管理层和估值。
+例如：Unrivaled Investing 个股深度、Sven Carlin 针对单一标的的专题分析。
+
+**不适用**：访谈类、多标的快评/象限扫描、市场观点类视频 → 改用 `interview`。
 
 写作目标：
 - 输出「炼金投研」系列文章。

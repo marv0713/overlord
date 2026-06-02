@@ -198,7 +198,10 @@ class GeminiWriter(BaseWriter):
         issue = meta.get("issue")
         truncated = transcript[:_MAX_TRANSCRIPT_CHARS]
         
-        # Decide base persona based on profile
+        # deep-stock-analysis uses the full structured base prompt (management,
+        # competitive landscape, catalysts sections etc.).
+        # interview and any other profile uses the lean _GENERAL_SYSTEM_PROMPT
+        # so the profile's own structure directive is the primary driver.
         if self.profile_name in ["alchemy-research", "market-commentary", "deep-stock-analysis"]:
             base_prompt = _WRITER_SYSTEM_PROMPT
         else:
