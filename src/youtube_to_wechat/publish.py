@@ -39,10 +39,9 @@ class WechatDraftPublisher:
             body_lines = [l for l in text.splitlines() if l.strip() and not l.startswith("#")]
             digest = " ".join(body_lines)[:110]
 
-        content = _markdown_to_html(text)
-        required = require_env(env, ["WECHAT_APPID", "WECHAT_APPSECRET", "WECHAT_AUTHOR"])
-
         try:
+            content = _markdown_to_html(text)
+            required = require_env(env, ["WECHAT_APPID", "WECHAT_APPSECRET", "WECHAT_AUTHOR"])
             token = get_access_token(required["WECHAT_APPID"], required["WECHAT_APPSECRET"])
             thumb_media_id = upload_permanent_thumb(token, cover_path)
             article_payload = build_draft_article(

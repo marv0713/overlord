@@ -49,10 +49,7 @@ def generate_cover(
     draw.rectangle((36, 36, width - 36, height - 36), outline=gold, width=3)
     draw.rectangle((50, 50, width - 50, height - 50), outline="#4b3d19", width=1)
 
-    headline_font = _font(56)
-    issue_font    = _font(24)
-    hook_font     = _font(36)
-    subtitle_font = _font(26)
+    issue_font = _font(24)
 
     # Safe zone for text to avoid WeChat cropping (keep text within 600px width in center)
     safe_left = 150
@@ -63,37 +60,33 @@ def generate_cover(
     if issue:
         draw.text((70, 60), issue, font=issue_font, fill="#9c8a52")
 
-    # Prepare stacked elements
-    elements = []
-    
-    # 1. Headline (Gold)
-    if ticker or column:
-        headline_lines = _wrap_text(draw, f"{column}：{ticker}", headline_font, max_text_width, max_lines=2)
-        elements.append({"lines": headline_lines, "font": headline_font, "fill": gold})
-        
-    # 2. Hook (White)
-    if hook:
-        hook_lines = _wrap_text(draw, hook, hook_font, max_text_width, max_lines=3)
-        elements.append({"lines": hook_lines, "font": hook_font, "fill": "#f2f0e8"})
-        
-    # 3. Subtitle (Light Gold)
-    if subtitle:
-        subtitle_lines = _wrap_text(draw, subtitle, subtitle_font, max_text_width, max_lines=1)
-        elements.append({"lines": subtitle_lines, "font": subtitle_font, "fill": "#c8b46b"})
-
-    # Calculate total height of the stack
     element_spacing = 20
     line_spacing = 10
+    available_h = height - 130
+
+    elements = []
     total_h = 0
-    
-    for el in elements:
-        font = el["font"]
-        lines = el["lines"]
-        for line in lines:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            total_h += bbox[3] - bbox[1]
-        total_h += line_spacing * (len(lines) - 1)
-    total_h += element_spacing * (len(elements) - 1)
+    for scale in (1.0, 0.92, 0.84, 0.76, 0.68):
+        headline_font = _font(max(34, int(56 * scale)))
+        hook_font = _font(max(24, int(34 * scale)))
+        subtitle_font = _font(max(20, int(26 * scale)))
+        elements = []
+
+        if ticker or column:
+            headline_lines = _wrap_text(draw, f"{column}：{ticker}", headline_font, max_text_width, max_lines=2)
+            elements.append({"lines": headline_lines, "font": headline_font, "fill": gold})
+
+        if hook:
+            hook_lines = _wrap_text(draw, hook, hook_font, max_text_width, max_lines=3)
+            elements.append({"lines": hook_lines, "font": hook_font, "fill": "#f2f0e8"})
+
+        if subtitle:
+            subtitle_lines = _wrap_text(draw, subtitle, subtitle_font, max_text_width, max_lines=1)
+            elements.append({"lines": subtitle_lines, "font": subtitle_font, "fill": "#c8b46b"})
+
+        total_h = _stack_height(draw, elements, line_spacing, element_spacing)
+        if total_h <= available_h:
+            break
 
     # Start drawing vertically centered
     current_y = (height - total_h) / 2
@@ -140,9 +133,15 @@ def _wrap_text(
         words.append(current_word)
         
     for word in words:
+        if _text_width(draw, word, font) > max_width:
+            if current_line:
+                wrapped_lines.append(current_line)
+                current_line = ""
+            wrapped_lines.extend(_split_token_to_width(draw, word, font, max_width))
+            continue
+
         test_line = current_line + word
-        bbox = draw.textbbox((0, 0), test_line, font=font)
-        if (bbox[2] - bbox[0]) > max_width and current_line:
+        if _text_width(draw, test_line, font) > max_width and current_line:
             wrapped_lines.append(current_line)
             current_line = word
         else:
@@ -153,9 +152,64 @@ def _wrap_text(
         
     if len(wrapped_lines) > max_lines:
         wrapped_lines = wrapped_lines[:max_lines]
-        wrapped_lines[-1] = wrapped_lines[-1][:-1] + "..."
+        wrapped_lines[-1] = _fit_with_ellipsis(draw, wrapped_lines[-1], font, max_width)
         
     return wrapped_lines
+
+
+def _stack_height(
+    draw: ImageDraw.ImageDraw,
+    elements: list[dict],
+    line_spacing: int,
+    element_spacing: int,
+) -> int:
+    total_h = 0
+    for el in elements:
+        font = el["font"]
+        lines = el["lines"]
+        for line in lines:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            total_h += bbox[3] - bbox[1]
+        total_h += line_spacing * (len(lines) - 1)
+    total_h += element_spacing * max(0, len(elements) - 1)
+    return total_h
+
+
+def _text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont) -> int:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return bbox[2] - bbox[0]
+
+
+def _split_token_to_width(
+    draw: ImageDraw.ImageDraw,
+    token: str,
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
+) -> list[str]:
+    parts = []
+    current = ""
+    for char in token:
+        test = current + char
+        if current and _text_width(draw, test, font) > max_width:
+            parts.append(current)
+            current = char
+        else:
+            current = test
+    if current:
+        parts.append(current)
+    return parts
+
+
+def _fit_with_ellipsis(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
+) -> str:
+    ellipsis = "..."
+    while text and _text_width(draw, text + ellipsis, font) > max_width:
+        text = text[:-1]
+    return text + ellipsis if text else ellipsis
 
 
 def main() -> int:

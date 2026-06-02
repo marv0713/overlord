@@ -208,6 +208,7 @@ class GeminiWriter(BaseWriter):
         if self.profile_prompt:
             profile_section = (
                 "\n\n## 当前执行要求\n"
+                f"writer_profile：{self.profile_name}\n"
                 f"{self.profile_prompt}"
             )
 

@@ -37,10 +37,18 @@ def _markdown_to_html(md: str) -> str:
     import html
     import re
 
-    # 1. Pre-process bolding: **text** -> <strong>text</strong>
-    md = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", md)
-    # 2. Handle inline code: `text` -> <code style='background: #f4f4f4; padding: 2px 4px;'>text</code>
-    md = re.sub(r"`(.+?)`", r"<code style='background: #f4f4f4; padding: 2px 4px; font-family: monospace;'>\1</code>", md)
+    def inline(text: str) -> str:
+        escaped = html.escape(text, quote=False)
+        escaped = re.sub(
+            r"\*\*(.+?)\*\*",
+            r"<strong>\1</strong>",
+            escaped,
+        )
+        return re.sub(
+            r"`(.+?)`",
+            r"<code style='background: #f4f4f4; padding: 2px 4px; font-family: monospace;'>\1</code>",
+            escaped,
+        )
 
     lines = []
     in_quote = False
@@ -52,7 +60,7 @@ def _markdown_to_html(md: str) -> str:
             if not in_quote:
                 lines.append("<blockquote style='border-left: 3px solid #d4af37; padding: 8px 12px; color: #555; margin: 0.75em 0 0.85em; font-style: italic; background: #fdfaf2;'>")
                 in_quote = True
-            lines.append(f"<p style='{MOBILE_TEXT_STYLE}'>{stripped[2:]}</p>")
+            lines.append(f"<p style='{MOBILE_TEXT_STYLE}'>{inline(stripped[2:])}</p>")
             continue
         elif in_quote:
             lines.append("</blockquote>")
@@ -60,23 +68,25 @@ def _markdown_to_html(md: str) -> str:
 
         # Handle Headings
         if line.startswith("# "):
-            lines.append(f"<h1 style='font-size: 22px; line-height: 1.35; color: #d4af37; border-bottom: 2px solid #d4af37; padding-bottom: 8px; margin: 1.05em 0 0.68em; text-align: left;'>{line[2:]}</h1>")
+            lines.append(f"<h1 style='font-size: 22px; line-height: 1.35; color: #d4af37; border-bottom: 2px solid #d4af37; padding-bottom: 8px; margin: 1.05em 0 0.68em; text-align: left;'>{inline(line[2:])}</h1>")
         elif line.startswith("## "):
-            lines.append(f"<h2 style='font-size: 19px; line-height: 1.45; color: #333; margin: 1.15em 0 0.56em; border-left: 4px solid #d4af37; padding-left: 9px; text-align: left;'>{line[3:]}</h2>")
+            lines.append(f"<h2 style='font-size: 19px; line-height: 1.45; color: #333; margin: 1.15em 0 0.56em; border-left: 4px solid #d4af37; padding-left: 9px; text-align: left;'>{inline(line[3:])}</h2>")
         elif line.startswith("### "):
-            lines.append(f"<h3 style='font-size: 17px; line-height: 1.45; color: #444; margin: 1em 0 0.5em; text-align: left;'>🔸 {line[4:]}</h3>")
+            lines.append(f"<h3 style='font-size: 17px; line-height: 1.45; color: #444; margin: 1em 0 0.5em; text-align: left;'>🔸 {inline(line[4:])}</h3>")
         # Handle Lists (Both - and *)
         elif stripped.startswith("- ") or stripped.startswith("* "):
             content = stripped[2:]
-            lines.append(f"<p style='{MOBILE_LIST_STYLE}'>• {content}</p>")
+            lines.append(f"<p style='{MOBILE_LIST_STYLE}'>• {inline(content)}</p>")
         # Handle Images
         elif stripped.startswith("![") and "](" in stripped:
             alt_match = re.search(r"!\[(.*?)\]\((.*?)\)", stripped)
             if alt_match:
                 alt, src = alt_match.groups()
-                lines.append(f"<p style='text-align: center; margin: 1em 0;'><img src='{src}' alt='{alt}' style='max-width: 100%; border-radius: 8px;'></p>")
+                escaped_alt = html.escape(alt, quote=True)
+                escaped_src = html.escape(src, quote=True)
+                lines.append(f"<p style='text-align: center; margin: 1em 0;'><img src='{escaped_src}' alt='{escaped_alt}' style='max-width: 100%; border-radius: 8px;'></p>")
         elif stripped:
-            lines.append(f"<p style='{MOBILE_TEXT_STYLE}'>{line}</p>")
+            lines.append(f"<p style='{MOBILE_TEXT_STYLE}'>{inline(line)}</p>")
 
     if in_quote:
         lines.append("</blockquote>")

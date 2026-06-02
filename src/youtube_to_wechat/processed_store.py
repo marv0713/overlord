@@ -30,6 +30,9 @@ class BaseProcessedStore(ABC):
     def allocate_issue(self, series: str) -> str: ...
 
     @abstractmethod
+    def preview_next_issue(self, series: str) -> str: ...
+
+    @abstractmethod
     def get_current_issue(self, series: str) -> str: ...
 
     @abstractmethod
@@ -97,6 +100,13 @@ class JSONDictStore(BaseProcessedStore):
         issue_number = int(series_record.get("next_issue", 1))
         series_record["next_issue"] = issue_number + 1
         self._save()
+        return f"No.{issue_number:03d}"
+
+    def preview_next_issue(self, series: str) -> str:
+        if not series:
+            return ""
+        series_record = self._data.get("series", {}).get(series, {"next_issue": 1})
+        issue_number = int(series_record.get("next_issue", 1))
         return f"No.{issue_number:03d}"
 
     def get_current_issue(self, series: str) -> str:

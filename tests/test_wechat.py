@@ -43,6 +43,14 @@ WECHAT_AUTHOR=marv 的炼金术
         self.assertIn("margin: 0 0 0.46em", html)
         self.assertIn("margin: 0 0 0.58em", html)
 
+    def test_markdown_html_escapes_untrusted_text(self):
+        html = _markdown_to_html("# <script>alert(1)</script>\n\n正文 <img src=x onerror=alert(1)>")
+
+        self.assertNotIn("<script>", html)
+        self.assertNotIn("<img src=x", html)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;", html)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,11 +1,21 @@
-import unittest
 import tempfile
+import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.process_sources import collect_source_candidates, process_source, process_video_url
+from scripts.process_sources import (
+    SourceCandidate,
+    _build_cover_text,
+    _should_push_output,
+    collect_source_candidates,
+    process_candidate,
+    process_episode,
+    process_source,
+    process_video_url,
+)
 from youtube_to_wechat.processed_store import ProcessedStore
 from youtube_to_wechat.source_config import SourceConfig
+from youtube_to_wechat.xiaoyuzhou import PodcastEpisode
 from youtube_to_wechat.youtube_channel import ChannelVideo
 
 
@@ -147,6 +157,117 @@ class ProcessSourcesTests(unittest.TestCase):
         self.assertTrue(store.is_processed("abc123"))
         self.assertEqual(store.source_record("demo-channel")["latest_videos"][0]["video_id"], "abc123")
         self.assertEqual(store.processing_record("abc123")["writer_profile"], "alchemy-research")
+
+    def test_should_push_only_when_generated_article_succeeded(self):
+        self.assertFalse(_should_push_output(Path("missing")))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            (output_dir / "article.md").write_text("# Placeholder\n", encoding="utf-8")
+            (output_dir / "run.json").write_text('{"article_status": "skipped"}', encoding="utf-8")
+
+            self.assertFalse(_should_push_output(output_dir))
+
+            (output_dir / "run.json").write_text('{"article_status": "ok"}', encoding="utf-8")
+            self.assertTrue(_should_push_output(output_dir))
+
+    @patch("scripts.process_sources.write_article")
+    @patch("scripts.process_sources.GeminiWriter")
+    @patch("scripts.process_sources.load_writer_profile")
+    @patch("scripts.process_sources.FasterWhisperTranscriber")
+    @patch("scripts.process_sources.download_episode_audio")
+    def test_process_episode_writes_article_in_episode_output_dir(
+        self,
+        download_audio,
+        transcriber_cls,
+        load_profile,
+        writer_cls,
+        write_article,
+    ):
+        ep = PodcastEpisode(
+            episode_id="ep123",
+            title="Demo Episode",
+            description="Show notes",
+            audio_url="https://example.com/audio.mp3",
+            duration_seconds=900,
+            published_at="2026-05-20",
+            episode_url="https://example.com/episode",
+            podcast_name="Demo Podcast",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "audio.mp3"
+            audio_path.write_bytes(b"demo")
+            download_audio.return_value = audio_path
+            transcriber_cls.return_value.transcribe.return_value = "Transcript body"
+            load_profile.return_value.name = "market-commentary"
+            load_profile.return_value.prompt = "Market prompt"
+            writer_cls.return_value.write.return_value.markdown = "# Generated"
+            writer_cls.return_value.write.return_value.title = "Generated"
+
+            output_dir, run = process_episode(
+                ep,
+                source_slug="demo-podcast",
+                output_base=Path(temp_dir) / "demo-podcast",
+                generate_article=True,
+            )
+
+        self.assertEqual(run["article_status"], "ok")
+        self.assertEqual(output_dir, Path(temp_dir) / "demo-podcast" / "ep123")
+        write_article.assert_called_once()
+        self.assertEqual(write_article.call_args.args[0], Path(temp_dir) / "demo-podcast")
+        self.assertEqual(write_article.call_args.args[1], "ep123")
+
+    @patch("scripts.process_sources.process_video_url")
+    def test_process_candidate_does_not_require_private_store_data(self, process_video):
+        class MinimalStore:
+            def is_processed(self, video_id): return False
+            def processed_video_ids(self): return set()
+            def processed_video_ids_for_source(self, source_slug): return set()
+            def has_source(self, source_slug): return False
+            def allocate_issue(self, series): return "No.001"
+            def preview_next_issue(self, series): return "No.001"
+            def get_current_issue(self, series): return "No.001"
+            def processing_record(self, video_id): return {}
+            def source_record(self, source_slug): return {}
+            def record_source_scan(self, source_name, source_slug, videos): pass
+            def mark_processed(self, *args, **kwargs): pass
+
+        source = SourceConfig(
+            type="youtube_channel",
+            name="Demo Channel",
+            url="https://www.youtube.com/@demo",
+        )
+        video = ChannelVideo(
+            video_id="abc123",
+            title="Demo Long Video",
+            url="https://www.youtube.com/watch?v=abc123",
+            duration_seconds=900,
+        )
+        process_video.return_value = (Path("outputs/youtube/demo-channel/abc123"), {"status": "ok"})
+
+        processed = process_candidate(
+            candidate=SourceCandidate(source=source, source_slug="demo-channel", video=video),
+            store=MinimalStore(),
+            output_base=Path("outputs/youtube"),
+            no_check_certificates=False,
+            dry_run=False,
+        )
+
+        self.assertEqual(processed, 1)
+        self.assertEqual(process_video.call_args.kwargs["issue"], "No.001")
+
+    def test_cover_text_uses_full_title_without_preview_truncation(self):
+        title = "炼金投研｜No.008 | ZS Zscaler 财报暴雷深度拆解：警惕高增长背后的内投出走"
+
+        ticker, hook = _build_cover_text(
+            source_name="Unrivaled Investing",
+            title=title,
+            issue="No.008",
+        )
+
+        self.assertEqual(ticker, "Unrivaled Investing")
+        self.assertIn("ZS Zscaler 财报暴雷深度拆解", hook)
+        self.assertNotIn("...", hook)
 
 
 if __name__ == "__main__":

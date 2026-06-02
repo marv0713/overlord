@@ -10,6 +10,7 @@ from pathlib import Path
 from youtube_to_wechat.output import write_article, write_outputs
 from youtube_to_wechat.processed_store import BaseProcessedStore, create_store, slugify_source_name
 from youtube_to_wechat.source_config import SourceConfig, load_source_config
+from youtube_to_wechat.transcriber import FasterWhisperTranscriber, TranscriberError
 from youtube_to_wechat.writer import GeminiWriter, WriterError
 from youtube_to_wechat.writer_profiles import load_writer_profile
 from youtube_to_wechat.xiaoyuzhou import (
@@ -218,6 +219,30 @@ def collect_source_candidates(
     )
 
 
+def _should_push_output(output_dir: Path) -> bool:
+    article_path = output_dir / "article.md"
+    run_json_path = output_dir / "run.json"
+    if not article_path.exists() or not run_json_path.exists():
+        return False
+    try:
+        run = json.loads(run_json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return run.get("article_status") == "ok"
+
+
+def _build_cover_text(source_name: str, title: str, issue: str = "") -> tuple[str, str]:
+    cleaned = title.strip()
+    for prefix in ("炼金投研｜", "炼金投研 |", "炼金投研：", "炼金投研:"):
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix):].strip()
+    if issue:
+        for prefix in (f"{issue} |", f"{issue}｜", f"{issue}:"):
+            if cleaned.startswith(prefix):
+                cleaned = cleaned[len(prefix):].strip()
+    return source_name.strip(), cleaned or title.strip() or "最新研报"
+
+
 def process_candidate(
     candidate: SourceCandidate,
     store: BaseProcessedStore,
@@ -235,8 +260,7 @@ def process_candidate(
     if dry_run:
         return 0
 
-    tentative_issue_num = store._data.get("series", {}).get(source.series, {}).get("next_issue", 1) if source.series else 0
-    tentative_issue = f"No.{tentative_issue_num:03d}" if source.series else ""
+    tentative_issue = store.preview_next_issue(source.series) if source.series else ""
 
     if candidate.video is not None:
         output_dir, run = process_video_url(
@@ -357,7 +381,6 @@ def process_episode(
         return output_dir, run
 
     # Transcribe
-    from youtube_to_wechat.transcriber import FasterWhisperTranscriber, TranscriberError  # noqa: PLC0415
     transcriber = FasterWhisperTranscriber(model_size=model_size, language=language or None)
     try:
         transcript = transcriber.transcribe(audio_path)
@@ -385,7 +408,7 @@ def process_episode(
                 profile_prompt=profile.prompt,
             )
             article = writer.write(full_transcript, meta)
-            write_article(output_base / ep.episode_id, ep.episode_id, article.markdown)
+            write_article(output_base, ep.episode_id, article.markdown)
             run["article_status"] = "ok"
             run["article_title"] = article.title
         except (OSError, WriterError) as exc:
@@ -532,7 +555,7 @@ def main() -> int:
             )
             
             # If successfully generated an article and push is requested
-            if args.push and (output_dir / "article.md").exists():
+            if args.push and _should_push_output(output_dir):
                 cover_path = Path(args.cover) if args.cover else output_dir / "cover.png"
                 run_json_path = output_dir / "run.json"
                 
@@ -553,12 +576,16 @@ def main() -> int:
                     if not title:
                         title = "最新研报"
 
-                    hook_text = (title[:16] + "...") if len(title) > 16 else title
                     _run_data = _json.loads(run_json_path.read_text(encoding="utf-8")) if run_json_path.exists() else {}
+                    ticker_text, hook_text = _build_cover_text(
+                        source_name=candidate.source.name,
+                        title=title,
+                        issue=_run_data.get("issue", ""),
+                    )
                     generate_cover(
                         output=cover_path,
                         column="炼金投研",
-                        ticker=candidate.source.name[:12],
+                        ticker=ticker_text,
                         hook=hook_text,
                         issue=_run_data.get("issue", "")
                     )
