@@ -52,13 +52,12 @@ def strip_leading_title_block(text: str) -> str:
     return "\n".join(lines[index:]).lstrip()
 
 
-def compact_wechat_title(title: str, max_chars: int = 60) -> str:
+def compact_wechat_title(title: str, max_chars: int = 40) -> str:
     """Format a title for WeChat article use.
 
-    WeChat supports up to 64 chars in the title field.  We use 60 as a
-    comfortable limit to leave room for the column prefix added later.
-    The function strips the column prefix (if present) and the issue
-    number so that build_draft_article can re-assemble them cleanly.
+    Truncates at the first full-width colon (：) so elaboration after the
+    subject line is dropped — e.g. "Sven Carlin 价值投资象限：拆解..." becomes
+    "Sven Carlin 价值投资象限".  Hard cap at max_chars chars after the issue prefix.
     """
     cleaned = title.strip()
     for prefix in ("炼金投研｜", "炼金投研 |", "炼金投研：", "炼金投研:"):
@@ -71,6 +70,10 @@ def compact_wechat_title(title: str, max_chars: int = 60) -> str:
     if match:
         issue = match.group(1)
         cleaned = match.group(2).strip()
+
+    # Truncate at ：so "X 价值投资象限：拆解..." → "X 价值投资象限"
+    if "：" in cleaned:
+        cleaned = cleaned.split("：", 1)[0].strip()
 
     if len(cleaned) > max_chars:
         cleaned = cleaned[:max_chars].rstrip()
