@@ -49,6 +49,23 @@ def strip_leading_title_block(text: str) -> str:
             while index < len(lines) and not lines[index].strip():
                 index += 1
 
+    # Skip any disclaimer blockquote lines that Gemini may have written at the
+    # top of the article body (> ⚠️ 本文由 AI...).  build_draft_article always
+    # prepends its own styled version, so this prevents a duplicate.
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if stripped.startswith(">") and ("⚠️" in stripped or "本文由 AI" in stripped or "仅供参考" in stripped):
+            index += 1
+        elif not stripped:
+            # skip blank lines that immediately follow a removed disclaimer
+            if index > 0 and (lines[index - 1].strip().startswith(">") and
+                    ("⚠️" in lines[index - 1] or "本文由 AI" in lines[index - 1])):
+                index += 1
+            else:
+                break
+        else:
+            break
+
     return "\n".join(lines[index:]).lstrip()
 
 
