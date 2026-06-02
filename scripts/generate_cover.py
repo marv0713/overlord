@@ -26,14 +26,14 @@ def generate_cover(
     issue: str = "",
     hook: str = "",
 ) -> None:
-    # 900×383 = 2.35:1  ← WeChat feed thumbnail standard ratio
-    width, height = 900, 383
+    # 900×500 ≈ 1.8:1  ← gives more vertical room for text; WeChat accepts up to ~2.35:1 for thumb
+    width, height = 900, 500
     image = Image.new("RGB", (width, height), "#101113")
     draw = ImageDraw.Draw(image)
 
     # Gradient background
     for y in range(height):
-        shade = int(16 + y / height * 16)
+        shade = int(16 + y / height * 20)
         draw.line([(0, y), (width, y)], fill=(shade, shade, shade + 2))
 
     gold = "#d4af37"
@@ -41,43 +41,51 @@ def generate_cover(
 
     # Diagonal decorative lines
     for x in range(80, width, 140):
-        draw.line([(x, 40), (x + 70, height - 40)], fill=muted_gold, width=1)
-    for y in [90, 190, 300]:
-        draw.line([(90, y), (810, y - 15)], fill="#242424", width=2)
+        draw.line([(x, 50), (x + 80, height - 50)], fill=muted_gold, width=1)
+    for y in [110, 240, 380]:
+        draw.line([(90, y), (810, y - 18)], fill="#242424", width=2)
 
     # Border frames
     draw.rectangle((36, 36, width - 36, height - 36), outline=gold, width=3)
     draw.rectangle((50, 50, width - 50, height - 50), outline="#4b3d19", width=1)
 
-    issue_font = _font(24)
+    # Safe zone — wider than before so text has more room
+    safe_left = 100
+    safe_right = width - 100
+    max_text_width = safe_right - safe_left  # 700px
 
-    # Safe zone for text to avoid WeChat cropping (keep text within 600px width in center)
-    safe_left = 150
-    safe_right = width - 150
-    max_text_width = safe_right - safe_left
-
-    # Issue number — top left inside border
+    # ── Top label row: issue (left) + column (right) ──
+    label_font = _font(22)
+    label_y = 64
     if issue:
-        draw.text((70, 60), issue, font=issue_font, fill="#9c8a52")
+        draw.text((70, label_y), issue, font=label_font, fill="#9c8a52")
+    if column:
+        col_bbox = draw.textbbox((0, 0), column, font=label_font)
+        col_w = col_bbox[2] - col_bbox[0]
+        draw.text((width - 70 - col_w, label_y), column, font=label_font, fill="#9c8a52")
 
-    element_spacing = 20
+    # ── Main content block (vertically centred in remaining space) ──
+    element_spacing = 22
     line_spacing = 10
-    available_h = height - 130
+    top_reserved = 110   # space used by label row
+    bottom_reserved = 60
+    available_h = height - top_reserved - bottom_reserved
 
-    elements = []
+    elements: list[dict] = []
     total_h = 0
     for scale in (1.0, 0.92, 0.84, 0.76, 0.68):
-        headline_font = _font(max(34, int(56 * scale)))
-        hook_font = _font(max(24, int(34 * scale)))
-        subtitle_font = _font(max(20, int(26 * scale)))
+        headline_font = _font(max(32, int(54 * scale)))
+        hook_font = _font(max(22, int(32 * scale)))
+        subtitle_font = _font(max(18, int(24 * scale)))
         elements = []
 
-        if ticker or column:
-            headline_lines = _wrap_text(draw, f"{column}：{ticker}", headline_font, max_text_width, max_lines=2)
+        # headline = ticker only (column is already shown in the label row)
+        if ticker:
+            headline_lines = _wrap_text(draw, ticker, headline_font, max_text_width, max_lines=2)
             elements.append({"lines": headline_lines, "font": headline_font, "fill": gold})
 
         if hook:
-            hook_lines = _wrap_text(draw, hook, hook_font, max_text_width, max_lines=3)
+            hook_lines = _wrap_text(draw, hook, hook_font, max_text_width, max_lines=2)
             elements.append({"lines": hook_lines, "font": hook_font, "fill": "#f2f0e8"})
 
         if subtitle:
@@ -88,9 +96,10 @@ def generate_cover(
         if total_h <= available_h:
             break
 
-    # Start drawing vertically centered
-    current_y = (height - total_h) / 2
-    
+    # Vertically centre the block in the available zone
+    content_top = top_reserved
+    current_y = content_top + (available_h - total_h) / 2
+
     for el in elements:
         font = el["font"]
         lines = el["lines"]
@@ -102,7 +111,7 @@ def generate_cover(
             x = safe_left + (max_text_width - line_w) / 2
             draw.text((x, current_y), line, font=font, fill=fill)
             current_y += line_h + line_spacing
-        current_y += element_spacing - line_spacing  # Adjust spacing between elements
+        current_y += element_spacing - line_spacing
 
     output.parent.mkdir(parents=True, exist_ok=True)
     image.save(output)

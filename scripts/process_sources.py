@@ -232,6 +232,12 @@ def _should_push_output(output_dir: Path) -> bool:
 
 
 def _build_cover_text(source_name: str, title: str, issue: str = "") -> tuple[str, str]:
+    """Return (ticker, hook) suitable for the cover image.
+
+    ticker — short source / channel label (e.g. "Sven Carlin")
+    hook   — a compact teaser from the article title, at most 24 chars.
+             Long titles are truncated with '…' so the cover stays clean.
+    """
     cleaned = title.strip()
     for prefix in ("炼金投研｜", "炼金投研 |", "炼金投研：", "炼金投研:"):
         if cleaned.startswith(prefix):
@@ -240,7 +246,12 @@ def _build_cover_text(source_name: str, title: str, issue: str = "") -> tuple[st
         for prefix in (f"{issue} |", f"{issue}｜", f"{issue}:"):
             if cleaned.startswith(prefix):
                 cleaned = cleaned[len(prefix):].strip()
-    return source_name.strip(), cleaned or title.strip() or "最新研报"
+    hook = cleaned or title.strip() or "最新研报"
+    # Keep the hook concise so it fits on the cover (≤24 chars)
+    MAX_HOOK_LEN = 24
+    if len(hook) > MAX_HOOK_LEN:
+        hook = hook[:MAX_HOOK_LEN].rstrip() + "…"
+    return source_name.strip(), hook
 
 
 def process_candidate(
