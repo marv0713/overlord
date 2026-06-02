@@ -231,27 +231,19 @@ def _should_push_output(output_dir: Path) -> bool:
     return run.get("article_status") == "ok"
 
 
-def _build_cover_text(source_name: str, title: str, issue: str = "") -> tuple[str, str]:
-    """Return (ticker, hook) suitable for the cover image.
+def _build_cover_text(raw_title: str, issue: str = "") -> tuple[str, str]:
+    """Return (ticker, hook) for the cover image.
 
-    ticker — short source / channel label (e.g. "Sven Carlin")
-    hook   — a compact teaser from the article title, at most 24 chars.
-             Long titles are truncated with '…' so the cover stays clean.
+    ticker — the original YouTube / podcast episode title, truncated to 24 chars
+             so it fits in the cover headline.
+    hook   — empty string (issue + column labels in the corners already give
+             enough context; keeping hook blank keeps the design clean).
     """
-    cleaned = title.strip()
-    for prefix in ("炼金投研｜", "炼金投研 |", "炼金投研：", "炼金投研:"):
-        if cleaned.startswith(prefix):
-            cleaned = cleaned[len(prefix):].strip()
-    if issue:
-        for prefix in (f"{issue} |", f"{issue}｜", f"{issue}:"):
-            if cleaned.startswith(prefix):
-                cleaned = cleaned[len(prefix):].strip()
-    hook = cleaned or title.strip() or "最新研报"
-    # Keep the hook concise so it fits on the cover (≤24 chars)
-    MAX_HOOK_LEN = 24
-    if len(hook) > MAX_HOOK_LEN:
-        hook = hook[:MAX_HOOK_LEN].rstrip() + "…"
-    return source_name.strip(), hook
+    title = raw_title.strip()
+    MAX_LEN = 24
+    if len(title) > MAX_LEN:
+        title = title[:MAX_LEN].rstrip() + "…"
+    return title, ""
 
 
 def process_candidate(
@@ -588,9 +580,9 @@ def main() -> int:
                         title = "最新研报"
 
                     _run_data = _json.loads(run_json_path.read_text(encoding="utf-8")) if run_json_path.exists() else {}
+                    # Use the original source title as the cover headline
                     ticker_text, hook_text = _build_cover_text(
-                        source_name=candidate.source.name,
-                        title=title,
+                        raw_title=candidate.item_title,
                         issue=_run_data.get("issue", ""),
                     )
                     generate_cover(
