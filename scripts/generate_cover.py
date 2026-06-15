@@ -28,65 +28,65 @@ def generate_cover(
 ) -> None:
     # 900×500 ≈ 1.8:1  ← gives more vertical room for text; WeChat accepts up to ~2.35:1 for thumb
     width, height = 900, 500
-    image = Image.new("RGB", (width, height), "#101113")
+    image = Image.new("RGB", (width, height), "#0f1115")
     draw = ImageDraw.Draw(image)
 
-    # Gradient background
+    # Quiet gradient background. Keep decoration subtle so small WeChat thumbs remain readable.
     for y in range(height):
-        shade = int(16 + y / height * 20)
-        draw.line([(0, y), (width, y)], fill=(shade, shade, shade + 2))
+        shade = int(14 + y / height * 14)
+        draw.line([(0, y), (width, y)], fill=(shade, shade + 1, shade + 5))
 
     gold = "#d4af37"
-    muted_gold = "#7b6425"
+    muted_gold = "#5f5128"
+    ink = "#f5f2e9"
 
-    # Diagonal decorative lines
-    for x in range(80, width, 140):
-        draw.line([(x, 50), (x + 80, height - 50)], fill=muted_gold, width=1)
-    for y in [110, 240, 380]:
-        draw.line([(90, y), (810, y - 18)], fill="#242424", width=2)
+    for x in range(110, width, 190):
+        draw.line([(x, 72), (x + 58, height - 72)], fill="#252116", width=1)
 
     # Border frames
-    draw.rectangle((36, 36, width - 36, height - 36), outline=gold, width=3)
-    draw.rectangle((50, 50, width - 50, height - 50), outline="#4b3d19", width=1)
+    draw.rectangle((34, 34, width - 34, height - 34), outline=gold, width=4)
+    draw.rectangle((52, 52, width - 52, height - 52), outline=muted_gold, width=1)
 
-    # Safe zone — wider than before so text has more room
-    safe_left = 100
-    safe_right = width - 100
-    max_text_width = safe_right - safe_left  # 700px
+    safe_left = 82
+    safe_right = width - 82
+    max_text_width = safe_right - safe_left
 
     # ── Top label row: issue (left) + column (right) ──
-    label_font = _font(22)
-    label_y = 64
+    label_font = _font(24)
+    label_y = 62
     if issue:
-        draw.text((70, label_y), issue, font=label_font, fill="#9c8a52")
+        draw.text((safe_left, label_y), issue, font=label_font, fill="#bca45d")
     if column:
         col_bbox = draw.textbbox((0, 0), column, font=label_font)
         col_w = col_bbox[2] - col_bbox[0]
-        draw.text((width - 70 - col_w, label_y), column, font=label_font, fill="#9c8a52")
+        draw.text((safe_right - col_w, label_y), column, font=label_font, fill="#bca45d")
 
     # ── Main content block (vertically centred in remaining space) ──
-    element_spacing = 22
-    line_spacing = 10
-    top_reserved = 110   # space used by label row
-    bottom_reserved = 60
+    element_spacing = 18
+    line_spacing = 12
+    top_reserved = 120
+    bottom_reserved = 64
     available_h = height - top_reserved - bottom_reserved
 
     elements: list[dict] = []
     total_h = 0
-    for scale in (1.0, 0.92, 0.84, 0.76, 0.68):
-        headline_font = _font(max(32, int(54 * scale)))
-        hook_font = _font(max(22, int(32 * scale)))
-        subtitle_font = _font(max(18, int(24 * scale)))
+    ticker = _compact_cover_text(ticker, 20)
+    hook = _compact_cover_text(hook, 24)
+    subtitle = _compact_cover_text(subtitle, 26)
+
+    for scale in (1.0, 0.92, 0.84, 0.76, 0.68, 0.60):
+        headline_font = _font(max(42, int(74 * scale)))
+        hook_font = _font(max(28, int(40 * scale)))
+        subtitle_font = _font(max(22, int(28 * scale)))
         elements = []
 
-        # headline = ticker only (column is already shown in the label row)
         if ticker:
             headline_lines = _wrap_text(draw, ticker, headline_font, max_text_width, max_lines=2)
-            elements.append({"lines": headline_lines, "font": headline_font, "fill": gold})
+            elements.append({"lines": headline_lines, "font": headline_font, "fill": ink})
 
         if hook:
             hook_lines = _wrap_text(draw, hook, hook_font, max_text_width, max_lines=2)
-            elements.append({"lines": hook_lines, "font": hook_font, "fill": "#f2f0e8"})
+            elements.append({"lines": hook_lines, "font": hook_font, "fill": gold})
 
         if subtitle:
             subtitle_lines = _wrap_text(draw, subtitle, subtitle_font, max_text_width, max_lines=1)
@@ -96,7 +96,6 @@ def generate_cover(
         if total_h <= available_h:
             break
 
-    # Vertically centre the block in the available zone
     content_top = top_reserved
     current_y = content_top + (available_h - total_h) / 2
 
@@ -106,15 +105,20 @@ def generate_cover(
         fill = el["fill"]
         for line in lines:
             bbox = draw.textbbox((0, 0), line, font=font)
-            line_w = bbox[2] - bbox[0]
             line_h = bbox[3] - bbox[1]
-            x = safe_left + (max_text_width - line_w) / 2
-            draw.text((x, current_y), line, font=font, fill=fill)
+            draw.text((safe_left, current_y), line, font=font, fill=fill)
             current_y += line_h + line_spacing
         current_y += element_spacing - line_spacing
 
     output.parent.mkdir(parents=True, exist_ok=True)
     image.save(output)
+
+
+def _compact_cover_text(text: str, max_chars: int) -> str:
+    text = " ".join((text or "").replace("**", "").split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
 
 
 def _wrap_text(

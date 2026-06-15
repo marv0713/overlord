@@ -256,7 +256,7 @@ class ProcessSourcesTests(unittest.TestCase):
         self.assertEqual(processed, 1)
         self.assertEqual(process_video.call_args.kwargs["issue"], "No.001")
 
-    def test_cover_text_uses_full_title_without_preview_truncation(self):
+    def test_cover_text_uses_article_title_for_readable_thumbnail(self):
         title = "炼金投研｜No.008 | ZS Zscaler 财报暴雷深度拆解：警惕高增长背后的内投出走"
 
         ticker, hook = _build_cover_text(
@@ -265,8 +265,8 @@ class ProcessSourcesTests(unittest.TestCase):
             issue="No.008",
         )
 
-        self.assertEqual(ticker, "Unrivaled Investing")
-        self.assertIn("ZS Zscaler 财报暴雷深度拆解", hook)
+        self.assertEqual(ticker, "ZS Zscaler 财报暴雷深度拆解")
+        self.assertIn("警惕高增长背后的", hook)
         self.assertNotIn("...", hook)
 
 

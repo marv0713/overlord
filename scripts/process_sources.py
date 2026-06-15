@@ -127,15 +127,17 @@ def process_video_url(
     if generate_article and transcript:
         try:
             profile = load_writer_profile(writer_profile, writer_profile_dir)
-            writer = GeminiWriter(
-                model=gemini_model,
+            article, used_model = _write_article_with_model_fallback(
+                transcript=transcript,
+                meta=meta,
                 profile_name=profile.name,
                 profile_prompt=profile.prompt,
+                gemini_model=gemini_model,
             )
-            article = writer.write(transcript, meta)
             write_article(output_base, video_id, article.markdown)
             run["article_status"] = "ok"
             run["article_title"] = article.title
+            run["gemini_model"] = used_model
         except (OSError, WriterError) as exc:
             run["article_status"] = "error"
             run["article_error"] = str(exc)
@@ -231,19 +233,38 @@ def _should_push_output(output_dir: Path) -> bool:
     return run.get("article_status") == "ok"
 
 
-def _build_cover_text(raw_title: str, issue: str = "") -> tuple[str, str]:
-    """Return (ticker, hook) for the cover image.
+def _build_cover_text(
+    raw_title: str = "",
+    issue: str = "",
+    source_name: str = "",
+    title: str | None = None,
+) -> tuple[str, str]:
+    """Return a short, mobile-readable (headline, hook) pair for the cover."""
+    if title is not None:
+        raw_title = title
+    title = raw_title.replace("**", "").strip()
+    if "|" in title:
+        title = title.split("|", 1)[1].strip()
+    for sep in ("：", ":", "——", " - ", "？", "?"):
+        if sep in title:
+            head, tail = title.split(sep, 1)
+            if 4 <= len(head.strip()) <= 24:
+                return _trim_cover_text(head.strip(), 20), _trim_cover_text(tail.strip(), 22)
 
-    ticker — the original YouTube / podcast episode title, truncated to 24 chars
-             so it fits in the cover headline.
-    hook   — empty string (issue + column labels in the corners already give
-             enough context; keeping hook blank keeps the design clean).
-    """
-    title = raw_title.strip()
-    MAX_LEN = 24
-    if len(title) > MAX_LEN:
-        title = title[:MAX_LEN].rstrip() + "…"
-    return title, ""
+    words = title.split()
+    if words and words[0].isupper() and len(words[0]) <= 6:
+        head = " ".join(words[:2])
+        tail = " ".join(words[2:])
+        return _trim_cover_text(head, 20), _trim_cover_text(tail, 22)
+
+    return _trim_cover_text(title, 20), ""
+
+
+def _trim_cover_text(text: str, max_chars: int) -> str:
+    text = " ".join(text.split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
 
 
 def process_candidate(
@@ -405,15 +426,17 @@ def process_episode(
     if generate_article and transcript:
         try:
             profile = load_writer_profile(writer_profile, writer_profile_dir)
-            writer = GeminiWriter(
-                model=gemini_model,
+            article, used_model = _write_article_with_model_fallback(
+                transcript=full_transcript,
+                meta=meta,
                 profile_name=profile.name,
                 profile_prompt=profile.prompt,
+                gemini_model=gemini_model,
             )
-            article = writer.write(full_transcript, meta)
             write_article(output_base, ep.episode_id, article.markdown)
             run["article_status"] = "ok"
             run["article_title"] = article.title
+            run["gemini_model"] = used_model
         except (OSError, WriterError) as exc:
             run["article_status"] = "error"
             run["article_error"] = str(exc)
@@ -424,6 +447,48 @@ def process_episode(
         json.dumps(run, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     return output_dir, run
+
+
+def _write_article_with_model_fallback(
+    transcript: str,
+    meta: dict,
+    profile_name: str,
+    profile_prompt: str,
+    gemini_model: str,
+):
+    """Write with the first available model.
+
+    ``gemini_model`` may be a comma-separated list, e.g.
+    ``gemini-flash-latest,gemini-2.5-pro``. This keeps the cron on the latest
+    model first, while allowing recovery from transient Gemini capacity errors.
+    """
+    models = [item.strip() for item in gemini_model.split(",") if item.strip()]
+    if not models:
+        models = ["gemini-2.5-flash"]
+
+    last_error: WriterError | None = None
+    for model in models:
+        writer = GeminiWriter(
+            model=model,
+            profile_name=profile_name,
+            profile_prompt=profile_prompt,
+        )
+        try:
+            return writer.write(transcript, meta), model
+        except WriterError as exc:
+            last_error = exc
+            if not _is_retryable_model_error(exc):
+                raise
+            print(f"[writer] {model} failed with retryable error; trying next model: {exc}")
+
+    if last_error:
+        raise last_error
+    raise WriterError("No Gemini model configured")
+
+
+def _is_retryable_model_error(exc: WriterError) -> bool:
+    message = str(exc)
+    return any(token in message for token in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"))
 
 
 def process_source(
@@ -580,9 +645,11 @@ def main() -> int:
                         title = "最新研报"
 
                     _run_data = _json.loads(run_json_path.read_text(encoding="utf-8")) if run_json_path.exists() else {}
-                    # Use the original source title as the cover headline
+                    # Use the generated article title as the cover headline; source
+                    # titles are often long English strings that become unreadable
+                    # in WeChat's small list thumbnails.
                     ticker_text, hook_text = _build_cover_text(
-                        raw_title=candidate.item_title,
+                        raw_title=title,
                         issue=_run_data.get("issue", ""),
                     )
                     generate_cover(
