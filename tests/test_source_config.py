@@ -64,6 +64,33 @@ class SourceConfigTests(unittest.TestCase):
         self.assertEqual(source.priority, 20)
         self.assertEqual(source.writer_profile, "market-commentary")
 
+    def test_loads_email_dehydrate_source_without_series(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sources.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "sources": [
+                            {
+                                "type": "youtube_channel",
+                                "name": "Tucker Carlson",
+                                "url": "https://www.youtube.com/@TuckerCarlson/videos",
+                                "series": "",
+                                "writer_profile": "dehydrate",
+                                "destinations": ["email"],
+                            }
+                        ]
+                    }
+                )
+            )
+
+            config = load_source_config(path)
+
+        source = config.sources[0]
+        self.assertEqual(source.series, "")
+        self.assertEqual(source.writer_profile, "dehydrate")
+        self.assertEqual(source.destinations, ["email"])
+
 
 if __name__ == "__main__":
     unittest.main()

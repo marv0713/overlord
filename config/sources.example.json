@@ -43,6 +43,18 @@
       "priority": 30,
       "min_duration_seconds": 600,
       "writer_profile": "market-commentary"
+    },
+    {
+      "type": "youtube_channel",
+      "name": "Example Dehydrated Email Channel",
+      "url": "https://www.youtube.com/@example-longform/videos",
+      "enabled": false,
+      "series": "",
+      "priority": 60,
+      "min_duration_seconds": 300,
+      "writer_profile": "dehydrate",
+      "compare_evaluation": "none",
+      "destinations": ["email"]
     }
   ]
 }

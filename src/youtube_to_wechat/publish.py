@@ -1,7 +1,9 @@
 import json
 import re
+import smtplib
 import sys
 import urllib.request
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Protocol
 
@@ -108,9 +110,63 @@ class PushPlusPublisher:
             print(f"[{source_name}] PushPlusPublisher Error: {e}", file=sys.stderr)
 
 
+class EmailPublisher:
+    """Sends the full article Markdown by SMTP email."""
+    def publish(self, source_name: str, issue: str, article_path: Path, cover_path: Path, env: dict) -> None:
+        from_addr = env.get("EMAIL_FROM") or env.get("SMTP_FROM") or env.get("SMTP_USER")
+        required = {
+            "SMTP_HOST": env.get("SMTP_HOST"),
+            "SMTP_USER": env.get("SMTP_USER"),
+            "SMTP_PASSWORD": env.get("SMTP_PASSWORD"),
+            "EMAIL_TO": env.get("EMAIL_TO"),
+            "EMAIL_FROM/SMTP_FROM": from_addr,
+        }
+        missing = [key for key, value in required.items() if not value]
+        if missing:
+            print(f"[{source_name}] EmailPublisher: missing env {', '.join(missing)}.", file=sys.stderr)
+            return
+
+        text = article_path.read_text(encoding="utf-8")
+        title_match = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
+        title = title_match.group(1).strip() if title_match else f"{source_name} 最新内容"
+        subject = f"[{source_name}] {title}"
+
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = from_addr
+        msg["To"] = env["EMAIL_TO"]
+        msg.set_content(text)
+
+        host = env["SMTP_HOST"]
+        port = int(env.get("SMTP_PORT") or 465)
+        use_ssl = _env_bool(env.get("SMTP_USE_SSL"), default=(port == 465))
+        use_tls = _env_bool(env.get("SMTP_USE_TLS"), default=(port == 587))
+        try:
+            if use_ssl:
+                with smtplib.SMTP_SSL(host, port, timeout=20) as smtp:
+                    smtp.login(env["SMTP_USER"], env["SMTP_PASSWORD"])
+                    smtp.send_message(msg)
+            else:
+                with smtplib.SMTP(host, port, timeout=20) as smtp:
+                    if use_tls:
+                        smtp.starttls()
+                    smtp.login(env["SMTP_USER"], env["SMTP_PASSWORD"])
+                    smtp.send_message(msg)
+            print(f"[{source_name}] EmailPublisher: email sent to {env['EMAIL_TO']}.")
+        except Exception as e:
+            print(f"[{source_name}] EmailPublisher Error: {e}", file=sys.stderr)
+
+
+def _env_bool(value: str | None, default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 _PUBLISHERS: dict[str, Publisher] = {
     "wechat_draft": WechatDraftPublisher(),
     "pushplus": PushPlusPublisher(),
+    "email": EmailPublisher(),
 }
 
 

@@ -32,6 +32,30 @@
       "min_duration_seconds": 600,
       "writer_profile": "interview",
       "compare_evaluation": "none"
+    },
+    {
+      "type": "youtube_channel",
+      "name": "Tucker Carlson",
+      "url": "https://www.youtube.com/@TuckerCarlson/videos",
+      "enabled": true,
+      "series": "",
+      "priority": 60,
+      "min_duration_seconds": 300,
+      "writer_profile": "dehydrate",
+      "compare_evaluation": "none",
+      "destinations": ["email"]
+    },
+    {
+      "type": "youtube_channel",
+      "name": "Chris Williamson",
+      "url": "https://www.youtube.com/@ChrisWillx/videos",
+      "enabled": true,
+      "series": "",
+      "priority": 61,
+      "min_duration_seconds": 300,
+      "writer_profile": "dehydrate",
+      "compare_evaluation": "none",
+      "destinations": ["email"]
     }
   ]
 }
