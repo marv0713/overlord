@@ -30,7 +30,7 @@
       "series": "炼金投研",
       "priority": 30,
       "min_duration_seconds": 600,
-      "writer_profile": "market-commentary",
+      "writer_profile": "interview",
       "compare_evaluation": "none"
     }
   ]
