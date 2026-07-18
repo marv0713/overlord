@@ -632,12 +632,14 @@ def main() -> int:
                     except (OSError, ValueError):
                         _run = {}
                     _status = _run.get("status", "")
-                    if _status in ("error", "partial"):
-                        _errors = []
-                        for _key in ("transcript_error", "audio_error", "article_error"):
-                            if _run.get(_key):
-                                _errors.append(f"{_key}: {_run[_key]}")
-                        _error_msg = "; ".join(_errors) if _errors else f"status={_status}"
+                    # Collect concrete error fields (not just skipped steps)
+                    _errors = []
+                    for _key in ("transcript_error", "audio_error", "article_error"):
+                        if _run.get(_key):
+                            _errors.append(f"{_key}: {_run[_key]}")
+                    # Only alert on real failures: status=error, or partial with actual errors
+                    if _status == "error" or (_errors and _status == "partial"):
+                        _error_msg = "; ".join(_errors)
                         from youtube_to_wechat.publish import send_failure_alert
                         send_failure_alert(
                             source_name=candidate.source.name,
