@@ -621,6 +621,31 @@ def main() -> int:
                 writer_profile_dir=Path(args.writer_profile_dir),
                 gemini_model=args.gemini_model,
             )
+
+            # Check for task failure and send alert via WeChat
+            if not args.dry_run and output_dir is not None:
+                _run_json_path = output_dir / "run.json"
+                if _run_json_path.exists():
+                    import json as _json2
+                    try:
+                        _run = _json2.loads(_run_json_path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        _run = {}
+                    _status = _run.get("status", "")
+                    if _status in ("error", "partial"):
+                        _errors = []
+                        for _key in ("transcript_error", "audio_error", "article_error"):
+                            if _run.get(_key):
+                                _errors.append(f"{_key}: {_run[_key]}")
+                        _error_msg = "; ".join(_errors) if _errors else f"status={_status}"
+                        from youtube_to_wechat.publish import send_failure_alert
+                        send_failure_alert(
+                            source_name=candidate.source.name,
+                            error_message=_error_msg,
+                            item_title=candidate.item_title,
+                            issue=_run.get("issue", ""),
+                            env=load_env(Path(args.env)),
+                        )
             
             # If successfully generated an article and push is requested
             if args.push and _should_push_output(output_dir):
@@ -681,6 +706,15 @@ def main() -> int:
 
     except (OSError, ValueError, YtDlpError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        try:
+            from youtube_to_wechat.publish import send_failure_alert
+            send_failure_alert(
+                source_name="process_sources",
+                error_message=f"Fatal error: {exc}",
+                env=load_env(Path(args.env)) if Path(args.env).exists() else {},
+            )
+        except Exception:
+            pass
         return 1
 
     print(f"Processed {processed_count} source item(s).")

@@ -157,6 +157,74 @@ class EmailPublisher:
             print(f"[{source_name}] EmailPublisher Error: {e}", file=sys.stderr)
 
 
+def send_failure_alert(
+    source_name: str,
+    error_message: str,
+    item_title: str = "",
+    issue: str = "",
+    env: dict | None = None,
+) -> None:
+    """Send failure notification via configured channels (WeCom webhook, PushPlus).
+
+    Reuses the same PushPlus / WeCom webhook infrastructure already used for
+    success alerts in WechatDraftPublisher._send_alerts().
+    """
+    if env is None:
+        env = {}
+
+    source_label = f"{source_name}"
+    if item_title:
+        source_label += f" — {item_title[:40]}"
+
+    # WeCom webhook (same mechanism as success alerts)
+    wecom_webhook = env.get("WECOM_WEBHOOK")
+    if wecom_webhook:
+        lines = [
+            f"❌ **任务处理失败**",
+            f"",
+            f"> **来源**: {source_label}",
+            f"> **错误**: {error_message[:200]}",
+        ]
+        if issue:
+            lines.append(f"> **期号**: {issue}")
+        lines.append(f"> **操作**: 请检查日志排查问题。")
+
+        msg = {"msgtype": "markdown", "markdown": {"content": "\n".join(lines)}}
+        req = urllib.request.Request(
+            wecom_webhook,
+            data=json.dumps(msg).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            print(f"[{source_name}] Failure alert sent via WeCom.")
+        except Exception as e:
+            print(f"[{source_name}] Failure alert via WeCom failed: {e}", file=sys.stderr)
+
+    # PushPlus (pushes directly to personal WeChat)
+    pushplus_token = env.get("PUSHPLUS_TOKEN")
+    if pushplus_token:
+        content = f"**来源：** {source_label}\n**错误：** {error_message[:500]}"
+        if issue:
+            content = f"**期号：** {issue}\n" + content
+        msg = {
+            "token": pushplus_token,
+            "title": f"❌ 任务失败: {source_name}",
+            "content": content,
+            "template": "markdown",
+        }
+        req = urllib.request.Request(
+            "http://www.pushplus.plus/send",
+            data=json.dumps(msg).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            urllib.request.urlopen(req, timeout=10)
+            print(f"[{source_name}] Failure alert sent via PushPlus.")
+        except Exception as e:
+            print(f"[{source_name}] Failure alert via PushPlus failed: {e}", file=sys.stderr)
+
+
 def _env_bool(value: str | None, default: bool = False) -> bool:
     if value is None or value == "":
         return default
