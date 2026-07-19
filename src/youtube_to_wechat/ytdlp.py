@@ -24,9 +24,13 @@ def ytdlp_command() -> List[str]:
 
 
 def ytdlp_options(no_check_certificates: bool = False) -> List[str]:
+    opts = [
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
+    ]
     if no_check_certificates:
-        return ["--no-check-certificates"]
-    return []
+        opts.append("--no-check-certificates")
+    return opts
 
 
 def fetch_info(url: str, no_check_certificates: bool = False) -> dict:
