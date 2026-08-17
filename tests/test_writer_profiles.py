@@ -44,6 +44,30 @@ class WriterProfileTests(unittest.TestCase):
         self.assertIn("Use a market commentary structure.", prompt)
         self.assertIn("writer_profile：market-commentary", prompt)
 
+    def test_interview_profile_keeps_long_transcript_tail(self):
+        writer = GeminiWriter(
+            api_key="test-key",
+            profile_name="interview",
+            profile_prompt="Cover every company in the title.",
+        )
+        transcript = "A" * 12_000 + "REDDIT AMAZON TSMC"
+
+        prompt = writer.build_prompt(transcript=transcript, meta={"title": "Four companies"})
+
+        self.assertIn("REDDIT AMAZON TSMC", prompt)
+
+    def test_deep_stock_profile_keeps_existing_transcript_limit(self):
+        writer = GeminiWriter(
+            api_key="test-key",
+            profile_name="deep-stock-analysis",
+            profile_prompt="Analyze one company.",
+        )
+        transcript = "A" * 12_000 + "TAIL SHOULD BE TRUNCATED"
+
+        prompt = writer.build_prompt(transcript=transcript, meta={"title": "One company"})
+
+        self.assertNotIn("TAIL SHOULD BE TRUNCATED", prompt)
+
     def test_parse_article_response_removes_opening_disclaimer_but_keeps_ending_one(self):
         raw = """**【免责声明】本内容仅为 AI 对海外公开资讯的辅助整理，不代表本公众号立场，不构成任何投资建议。**
 

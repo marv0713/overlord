@@ -154,6 +154,7 @@ _GENERAL_SYSTEM_PROMPT = """\
 """
 
 _MAX_TRANSCRIPT_CHARS = 12_000
+_MAX_INTERVIEW_TRANSCRIPT_CHARS = 100_000
 
 
 class GeminiWriter(BaseWriter):
@@ -196,7 +197,12 @@ class GeminiWriter(BaseWriter):
         channel = meta.get("uploader") or meta.get("channel") or ""
         url = meta.get("webpage_url") or meta.get("url") or ""
         issue = meta.get("issue")
-        truncated = transcript[:_MAX_TRANSCRIPT_CHARS]
+        transcript_limit = (
+            _MAX_INTERVIEW_TRANSCRIPT_CHARS
+            if self.profile_name == "interview"
+            else _MAX_TRANSCRIPT_CHARS
+        )
+        truncated = transcript[:transcript_limit]
         
         # deep-stock-analysis uses the full structured base prompt (management,
         # competitive landscape, catalysts sections etc.).
