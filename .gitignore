@@ -15,5 +15,6 @@ data/
 
 .context/
 .claude/
+.worktrees/
 *.code-workspace
 scratch*.py
