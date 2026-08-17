@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -233,6 +234,22 @@ def _should_push_output(output_dir: Path) -> bool:
     return run.get("article_status") == "ok"
 
 
+def _resolve_writer_profile(configured_profile: str, title: str) -> str:
+    """Resolve the Intrinsic Value channel's per-video writing structure."""
+    if configured_profile != "intrinsic-value-auto":
+        return configured_profile
+
+    normalized = " ".join(title.split())
+    topic = re.split(r"\s+[–—-]\s+|[?:：]", normalized, maxsplit=1)[0]
+    if topic.count(",") >= 1:
+        return "interview"
+    if re.search(r"\b(?:[2-9]|\d{2,})\s+stocks?\b", normalized, re.IGNORECASE):
+        return "interview"
+    if re.search(r"\b(?:stocks|companies)\s+(?:to|that|for|built)\b", normalized, re.IGNORECASE):
+        return "interview"
+    return "deep-stock-analysis"
+
+
 def _build_cover_text(
     raw_title: str = "",
     issue: str = "",
@@ -284,6 +301,10 @@ def process_candidate(
     if dry_run:
         return 0
 
+    writer_profile = _resolve_writer_profile(source.writer_profile, candidate.item_title)
+    if writer_profile != source.writer_profile:
+        print(f"[profile] {source.name}: {writer_profile}")
+
     tentative_issue = store.preview_next_issue(source.series) if source.series else ""
 
     if candidate.video is not None:
@@ -293,7 +314,7 @@ def process_candidate(
             no_check_certificates=no_check_certificates,
             skip_audio=source.compare_evaluation == "none",
             generate_article=generate_article,
-            writer_profile=source.writer_profile,
+            writer_profile=writer_profile,
             writer_profile_dir=writer_profile_dir,
             gemini_model=gemini_model,
             model_size=model_size,
@@ -311,7 +332,7 @@ def process_candidate(
             output_base=output_base / candidate.source_slug,
             no_check_certificates=no_check_certificates,
             generate_article=generate_article,
-            writer_profile=source.writer_profile,
+            writer_profile=writer_profile,
             writer_profile_dir=writer_profile_dir,
             gemini_model=gemini_model,
             model_size=model_size,
@@ -334,7 +355,7 @@ def process_candidate(
             status=run["status"],
             series=source.series,
             issue=issue,
-            writer_profile=source.writer_profile,
+            writer_profile=writer_profile,
         )
         if issue:
             print(f"[issue] {source.series}: {issue}")

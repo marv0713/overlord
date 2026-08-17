@@ -6,6 +6,7 @@ from unittest.mock import patch
 from scripts.process_sources import (
     SourceCandidate,
     _build_cover_text,
+    _resolve_writer_profile,
     _should_push_output,
     collect_source_candidates,
     process_candidate,
@@ -20,6 +21,39 @@ from youtube_to_wechat.youtube_channel import ChannelVideo
 
 
 class ProcessSourcesTests(unittest.TestCase):
+    def test_auto_profile_routes_explicit_company_list_to_interview(self):
+        self.assertEqual(
+            _resolve_writer_profile(
+                "intrinsic-value-auto",
+                "Google, Reddit, Amazon, TSMC – Are our Biggest Winners Still a Buy Now?",
+            ),
+            "interview",
+        )
+
+    def test_auto_profile_keeps_one_main_company_with_competitor_as_deep_stock(self):
+        self.assertEqual(
+            _resolve_writer_profile(
+                "intrinsic-value-auto",
+                "How Grab Beat Uber: Inside the Rise of Southeast Asia's Super App",
+            ),
+            "deep-stock-analysis",
+        )
+
+    def test_auto_profile_routes_plural_stock_scan_to_interview(self):
+        self.assertEqual(
+            _resolve_writer_profile(
+                "intrinsic-value-auto",
+                "5 Stocks: Compounders Built to Beat the Market",
+            ),
+            "interview",
+        )
+
+    def test_explicit_profile_is_unchanged(self):
+        self.assertEqual(
+            _resolve_writer_profile("dehydrate", "Adobe, PayPal and Intuit"),
+            "dehydrate",
+        )
+
     @patch("scripts.process_sources.write_article")
     @patch("scripts.process_sources.GeminiWriter")
     @patch("scripts.process_sources.load_writer_profile")
@@ -255,6 +289,46 @@ class ProcessSourcesTests(unittest.TestCase):
 
         self.assertEqual(processed, 1)
         self.assertEqual(process_video.call_args.kwargs["issue"], "No.001")
+
+    @patch("scripts.process_sources.process_video_url")
+    def test_process_candidate_resolves_auto_profile_before_writing(self, process_video):
+        class MinimalStore:
+            def allocate_issue(self, series): return "No.001"
+            def preview_next_issue(self, series): return "No.001"
+            def mark_processed(self, *args, **kwargs): self.recorded = kwargs
+
+        store = MinimalStore()
+        source = SourceConfig(
+            type="youtube_channel",
+            name="The Intrinsic Value Podcast",
+            url="https://www.youtube.com/@TheIntrinsicValuePodcast/videos",
+            writer_profile="intrinsic-value-auto",
+        )
+        video = ChannelVideo(
+            video_id="multi123",
+            title="Adobe, Lululemon, PayPal – Are our Biggest Losers a Buy Now?",
+            url="https://www.youtube.com/watch?v=multi123",
+            duration_seconds=3600,
+        )
+        process_video.return_value = (
+            Path("outputs/youtube/the-intrinsic-value-podcast/multi123"),
+            {"status": "ok"},
+        )
+
+        process_candidate(
+            candidate=SourceCandidate(
+                source=source,
+                source_slug="the-intrinsic-value-podcast",
+                video=video,
+            ),
+            store=store,
+            output_base=Path("outputs/youtube"),
+            no_check_certificates=False,
+            dry_run=False,
+        )
+
+        self.assertEqual(process_video.call_args.kwargs["writer_profile"], "interview")
+        self.assertEqual(store.recorded["writer_profile"], "interview")
 
     def test_cover_text_uses_article_title_for_readable_thumbnail(self):
         title = "炼金投研｜No.008 | ZS Zscaler 财报暴雷深度拆解：警惕高增长背后的内投出走"
