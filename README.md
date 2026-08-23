@@ -97,7 +97,9 @@ WECOM_WEBHOOK=
 
 明确可判断的群发拒绝或失败（例如配额、权限、校验等错误）会为该文章回退到 `freepublish` 公开发布；群发结果歧义时不会自动重试或回退，必须人工核验，不要直接盲目重跑整个批次。API 与后端共享配额：群发只有在确认请求于发送前失败时才安全重试一次；一旦进入歧义状态，后续条目不会再提交群发。提交群发是异步操作，不等同于已经送达粉丝。
 
-设置 `WECOM_WEBHOOK` 后，成功推送和需要人工核验的结果会按结果发送企业微信机器人提醒；未设置时不发送该提醒。终端日志以及每次运行的 `run.json` 中 `wechat_publish` 记录（包括 `mass_send_unknown`、`publish_unknown` 操作）是核对后台状态的证据和人工检查入口。
+设置 `WECOM_WEBHOOK` 后，微信公众号推送结果（包括成功和需要人工核验的结果）会按结果发送企业微信机器人提醒；未设置时不发送该提醒。微信公众号结果的 `action` 含义为：`draft` 表示草稿已保留（未自动发布，或自动发布失败）；`mass_send` 表示已向群发 API 提交，`task_id` 是 API 返回的任务 ID；`publish` 表示已向 `freepublish` API 提交（未群发），`task_id` 是 API 返回的发布 ID；`mass_send_unknown` 表示群发提交结果不确定；`publish_unknown` 表示公开发布提交结果不确定。后两种结果都必须先到微信公众号后台核对，绝不要盲目重跑或重新提交受影响的文章。`error_code` 和 `error_message` 记录 API 错误或降级/核验原因，`publish` 结果中的错误字段可能记录群发失败后回退发布的原因；unknown 结果的 `task_id` 可能为空，不代表没有提交。
+
+终端日志是首要核验依据；每次运行的 `run.json` 只有在 `PublishResult` 已返回、原有 `run.json` 可读且结果成功持久化后才会出现 `wechat_publish`。因此缺少该字段不能证明没有提交，尤其不能排除结果持久化失败；如果一次运行配置了多个目的地，该字段还会被后续目的地结果覆盖。同时检查控制台日志，并按需配置 `WECOM_WEBHOOK` 获取提醒。
 
 复制来源配置示例：
 
@@ -119,6 +121,7 @@ cp config/sources.example.json config/sources.json
 - `min_duration_seconds`：过滤短视频。
 - `writer_profile`：使用 `config/writer_profiles/<name>.md`。
 - `compare_evaluation`：默认 `none`。
+- `destinations`：发布目的地，可用 `wechat_draft`、`pushplus`、`email`；省略时默认是 `["wechat_draft"]`，因此省略并不是关闭微信推送。显式使用微信公众号时写 `"destinations": ["wechat_draft"]`；只发邮件、不走微信时写 `"destinations": ["email"]`，只发 PushPlus、不走微信时写 `"destinations": ["pushplus"]`。也可以组合已支持的目的地，例如 `["wechat_draft", "pushplus"]`。
 
 ## 运行
 
@@ -177,7 +180,7 @@ PYTHONPATH=src .venv/bin/python scripts/push_wechat_draft.py \
   --cover outputs/youtube/<source_slug>/<video_id>/cover.png
 ```
 
-批量生成并按配置推送（包括自动发布）时，来源配置的 `destinations` 必须包含 `wechat_draft`，例如 `"destinations": ["wechat_draft"]`：
+批量生成并按配置推送（包括自动发布）时，来源配置可以显式写 `"destinations": ["wechat_draft"]`；若省略 `destinations`，代码同样默认走微信公众号草稿目的地：
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/process_sources.py \
