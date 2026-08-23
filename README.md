@@ -1,6 +1,6 @@
 # overlord
 
-`overlord` 是一套基于 **Serverless 云端架构的自动化内容处理流水线**。它可以无人值守地从公开内容源抓取素材，调用 AI 生成深度文章，并自动排版推送到微信公众号草稿箱；按配置也可以继续自动发布。默认仍是安全的草稿模式，不会自动发布。系统采用“配置与代码解耦”的云端优先设计，同时向下兼容纯本地的开发和测试运行。当前支持 YouTube 频道和播客 RSS（包括小宇宙/RSSHub）两类来源。
+`overlord` 是一套基于 **Serverless 云端架构的自动化内容处理流水线**。它可以无人值守地从公开内容源抓取素材，调用 AI 生成深度文章，并自动排版推送到微信公众号草稿箱；按配置也可以继续提交自动发布。默认仍是安全的草稿模式，不会自动发布。系统采用“配置与代码解耦”的云端优先设计，同时向下兼容纯本地的开发和测试运行。当前支持 YouTube 频道和播客 RSS（包括小宇宙/RSSHub）两类来源。
 
 ## 能做什么
 
@@ -11,7 +11,7 @@
 - 按全局系列编号生成公众号文章。
 - 按不同博主/视频类型选择不同 writer profile。
 - 生成本地 `article.md`、`article.html`、`transcript.txt`、`meta.json` 和 `run.json`。
-- 可选推送到微信公众号草稿箱；默认仅创建草稿，也可按配置自动发布。
+- 可选推送到微信公众号草稿箱；默认仅创建草稿，也可按配置提交自动发布请求。
 
 ## 核心概念
 
@@ -90,16 +90,16 @@ WECOM_WEBHOOK=
 微信公众号发布开关：
 
 - `WECHAT_AUTO_PUBLISH=false` 或未设置：所有成功结果都保留为草稿，沿用当前的人工提醒流程。
-- `WECHAT_AUTO_PUBLISH=true` 且 `WECHAT_MASS_SEND=false`：每篇成功创建的草稿都会自动发布，但不会推送给粉丝。
-- `WECHAT_AUTO_PUBLISH=true` 且 `WECHAT_MASS_SEND=true` 或未设置：每个 cron 批次中第一篇成功创建的草稿会提交群发给全部粉丝，后续草稿自动发布但不推送给粉丝。`WECHAT_MASS_SEND` 只有在自动发布开启时才生效；未设置时代码默认为 `true`。
+- `WECHAT_AUTO_PUBLISH=true` 且 `WECHAT_MASS_SEND=false`：每篇成功创建的草稿都会向 `freepublish` 提交公开发布请求，但不会推送给粉丝。
+- `WECHAT_AUTO_PUBLISH=true` 且 `WECHAT_MASS_SEND=true` 或未设置：每次 `process_sources.py` 调用（一个进程生命周期）中第一篇成功创建的草稿会提交群发给全部粉丝，后续草稿向 `freepublish` 提交公开发布请求但不推送给粉丝。进程重启或再次运行会重置内存中的批次状态，因此不同调用都可能再次尝试第一篇群发；未知结果后不要盲目重跑或重新提交。`WECHAT_MASS_SEND` 只有在自动发布开启时才生效，未设置时代码默认为 `true`。
 
 启用自动发布前，公众号账号必须具备发布（`freepublish`）权限；只有 `WECHAT_MASS_SEND` 的有效值为 `true`（显式设置为 `true` 或未设置而采用默认值）时才需要群发权限。相关 API 调用还要求将 VPS IP 加入公众号 API 白名单。自动 API 无法设置合集，也无法设置“来源：官方 AI 生成”标记；文章正文中的 AI 生成披露仍会保留。
 
 明确可判断的群发拒绝或失败（例如配额、权限、校验等错误）会为该文章回退到 `freepublish` 公开发布；群发结果歧义时不会自动重试或回退，必须人工核验，不要直接盲目重跑整个批次。API 与后端共享配额：群发只有在确认请求于发送前失败时才安全重试一次；一旦进入歧义状态，后续条目不会再提交群发。提交群发是异步操作，不等同于已经送达粉丝。
 
-设置 `WECOM_WEBHOOK` 后，微信公众号推送结果（包括成功和需要人工核验的结果）会按结果发送企业微信机器人提醒；未设置时不发送该提醒。微信公众号结果的 `action` 含义为：`draft` 表示草稿已保留（未自动发布，或自动发布失败）；`mass_send` 表示已向群发 API 提交，`task_id` 是 API 返回的任务 ID；`publish` 表示已向 `freepublish` API 提交（未群发），`task_id` 是 API 返回的发布 ID；`mass_send_unknown` 表示群发提交结果不确定；`publish_unknown` 表示公开发布提交结果不确定。后两种结果都必须先到微信公众号后台核对，绝不要盲目重跑或重新提交受影响的文章。`error_code` 和 `error_message` 记录 API 错误或降级/核验原因，`publish` 结果中的错误字段可能记录群发失败后回退发布的原因；unknown 结果的 `task_id` 可能为空，不代表没有提交。
+只有成功创建草稿并完成微信公众号路由、返回 `PublishResult` 后，设置的 `WECOM_WEBHOOK` 才会发送对应的企业微信机器人提醒（包括成功和需要人工核验的结果）；未设置时不发送该提醒。缺少封面、凭证、访问令牌、图片上传或草稿创建失败等更早的终止错误，可能只有控制台/任务日志，不保证有该提醒。微信公众号结果的 `action` 含义为：`draft` 表示草稿已保留（未自动提交，或提交失败）；`mass_send` 表示已向群发 API 提交，`task_id` 是 API 返回的任务 ID；`publish` 表示 `freepublish/submit` 已接受请求（未群发），`task_id` 是 API 返回的 `publish_id`，不代表文章已经上线，代码不会轮询发布状态；`mass_send_unknown` 表示群发提交结果不确定；`publish_unknown` 表示公开发布提交结果不确定。后两种结果都必须先到微信公众号后台核对，绝不要盲目重跑或重新提交受影响的文章。`error_code` 和 `error_message` 记录 API 错误或降级/核验原因，`publish` 结果中的错误字段可能记录群发失败后回退提交的原因；unknown 结果的 `task_id` 可能为空，不代表没有提交。
 
-终端日志是首要核验依据；每次运行的 `run.json` 只有在 `PublishResult` 已返回、原有 `run.json` 可读且结果成功持久化后才会出现 `wechat_publish`。因此缺少该字段不能证明没有提交，尤其不能排除结果持久化失败；如果一次运行配置了多个目的地，该字段还会被后续目的地结果覆盖。同时检查控制台日志，并按需配置 `WECOM_WEBHOOK` 获取提醒。
+终端日志是首要核验依据；每次运行的 `run.json` 只有在 `PublishResult` 已返回、原有 `run.json` 可读且结果成功持久化后才会出现 `wechat_publish`。因此缺少该字段不能证明没有提交，尤其不能排除结果持久化失败；如果一次运行配置了多个目的地，只有后续目的地也返回另一个 `PublishResult` 时才会覆盖该字段，`email` 和 `pushplus` 返回 `None`，不会覆盖。同时检查控制台日志，并按需配置 `WECOM_WEBHOOK` 获取提醒。
 
 复制来源配置示例：
 
@@ -180,7 +180,7 @@ PYTHONPATH=src .venv/bin/python scripts/push_wechat_draft.py \
   --cover outputs/youtube/<source_slug>/<video_id>/cover.png
 ```
 
-批量生成并按配置推送（包括自动发布）时，来源配置可以显式写 `"destinations": ["wechat_draft"]`；若省略 `destinations`，代码同样默认走微信公众号草稿目的地：
+批量生成并按配置推送（包括自动发布请求）时，来源配置可以显式写 `"destinations": ["wechat_draft"]`；若省略 `destinations`，代码同样默认走微信公众号草稿目的地：
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/process_sources.py \
@@ -257,4 +257,4 @@ PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 - 不提交真实 `config/sources.json`。
 - 不提交 `data/processed.json`。
 - 不提交 `outputs/` 下的生成文章、封面或草稿素材。
-- 默认只创建公众号草稿；启用自动发布后才会按上述开关发布。
+- 默认只创建公众号草稿；启用自动发布后才会按上述开关提交发布请求。
