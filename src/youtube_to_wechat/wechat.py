@@ -196,7 +196,7 @@ def submit_mass_send(access_token: str, media_id: str) -> str:
     )
     _raise_api_error(data, "mass send")
     msg_id = data.get("msg_id")
-    if not msg_id:
+    if msg_id is None:
         raise WechatError(f"WeChat mass send error: missing msg_id in {data}")
     return str(msg_id)
 
@@ -208,7 +208,7 @@ def submit_publish(access_token: str, media_id: str) -> str:
     )
     _raise_api_error(data, "publish")
     publish_id = data.get("publish_id")
-    if not publish_id:
+    if publish_id is None:
         raise WechatError(f"WeChat publish error: missing publish_id in {data}")
     return str(publish_id)
 
@@ -218,7 +218,7 @@ def get_draft(access_token: str, media_id: str) -> dict[str, Any] | None:
         f"https://api.weixin.qq.com/cgi-bin/draft/get?access_token={urllib.parse.quote(access_token)}",
         {"media_id": media_id},
     )
-    errcode = data.get("errcode")
+    errcode = _normalize_api_errcode(data, "get draft")
     errmsg = data.get("errmsg", "")
     if errcode == 40007 and "invalid media_id" in str(errmsg).lower():
         return None
@@ -268,7 +268,7 @@ def _get_json(url: str) -> dict[str, Any]:
 
 
 def _raise_api_error(data: dict[str, Any], action: str) -> None:
-    errcode = data.get("errcode", 0)
+    errcode = _normalize_api_errcode(data, action)
     if errcode != 0:
         raise WechatError(
             f"WeChat {action} error: {data}",
@@ -276,6 +276,20 @@ def _raise_api_error(data: dict[str, Any], action: str) -> None:
             retryable=False,
             outcome_unknown=False,
         )
+
+
+def _normalize_api_errcode(data: dict[str, Any], action: str) -> int:
+    raw_errcode = data.get("errcode")
+    if raw_errcode is None:
+        return 0
+    try:
+        return int(raw_errcode)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise WechatError(
+            f"WeChat {action} error: invalid errcode in {data}",
+            retryable=False,
+            outcome_unknown=False,
+        ) from exc
 
 
 def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:

@@ -1,3 +1,4 @@
+import http.client
 import io
 import socket
 import unittest
@@ -46,6 +47,27 @@ class WechatTests(unittest.TestCase):
         self.assertFalse(raised.exception.outcome_unknown)
         self.assertIn("mass send", str(raised.exception))
 
+    def test_raise_api_error_accepts_missing_none_and_string_zero(self):
+        for data in ({}, {"errcode": None}, {"errcode": 0}, {"errcode": "0"}):
+            with self.subTest(data=data):
+                wechat._raise_api_error(data, "test")
+
+    def test_raise_api_error_normalizes_string_negative_code(self):
+        with self.assertRaises(WechatError) as raised:
+            wechat._raise_api_error({"errcode": "-1", "errmsg": "system busy"}, "mass send")
+
+        self.assertEqual(raised.exception.errcode, -1)
+        self.assertFalse(raised.exception.retryable)
+        self.assertFalse(raised.exception.outcome_unknown)
+
+    def test_raise_api_error_rejects_nonnumeric_code_as_structured_error(self):
+        with self.assertRaises(WechatError) as raised:
+            wechat._raise_api_error({"errcode": "not-a-code"}, "test")
+
+        self.assertIsNone(raised.exception.errcode)
+        self.assertFalse(raised.exception.retryable)
+        self.assertFalse(raised.exception.outcome_unknown)
+
     @patch("youtube_to_wechat.wechat._post_json", return_value={"msg_id": 987})
     def test_submit_mass_send_posts_exact_payload_and_returns_string_msg_id(self, post):
         result = wechat.submit_mass_send("token", "draft-1")
@@ -89,6 +111,24 @@ class WechatTests(unittest.TestCase):
         self.assertFalse(raised.exception.retryable)
         self.assertFalse(raised.exception.outcome_unknown)
 
+    @patch("youtube_to_wechat.wechat._post_json", return_value={"msg_id": 0})
+    def test_submit_mass_send_returns_zero_identifier_as_string(self, post):
+        self.assertEqual(wechat.submit_mass_send("token", "draft-1"), "0")
+
+    @patch("youtube_to_wechat.wechat._post_json", return_value={"publish_id": 0})
+    def test_submit_publish_returns_zero_identifier_as_string(self, post):
+        self.assertEqual(wechat.submit_publish("token", "draft-1"), "0")
+
+    @patch("youtube_to_wechat.wechat._post_json", return_value={"msg_id": None})
+    def test_submit_mass_send_none_identifier_is_missing(self, post):
+        with self.assertRaises(WechatError):
+            wechat.submit_mass_send("token", "draft-1")
+
+    @patch("youtube_to_wechat.wechat._post_json", return_value={"publish_id": None})
+    def test_submit_publish_none_identifier_is_missing(self, post):
+        with self.assertRaises(WechatError):
+            wechat.submit_publish("token", "draft-1")
+
     @patch("youtube_to_wechat.wechat._post_json", return_value={"errcode": 40007, "errmsg": "Invalid MEDIA_ID"})
     def test_get_draft_maps_invalid_media_id_to_none(self, post):
         self.assertIsNone(wechat.get_draft("token", "draft-1"))
@@ -96,6 +136,10 @@ class WechatTests(unittest.TestCase):
             "https://api.weixin.qq.com/cgi-bin/draft/get?access_token=token",
             {"media_id": "draft-1"},
         )
+
+    @patch("youtube_to_wechat.wechat._post_json", return_value={"errcode": "40007", "errmsg": "Invalid MEDIA_ID"})
+    def test_get_draft_maps_string_invalid_media_id_to_none(self, post):
+        self.assertIsNone(wechat.get_draft("token", "draft-1"))
 
     @patch("youtube_to_wechat.wechat._post_json", return_value={"errcode": 40007, "errmsg": "media missing"})
     def test_get_draft_raises_for_other_40007_message(self, post):
@@ -137,8 +181,53 @@ class WechatTests(unittest.TestCase):
         self.assertTrue(raised.exception.retryable)
         self.assertFalse(raised.exception.outcome_unknown)
 
+    def test_post_json_maps_connection_refused_to_safe_retryable_error(self):
+        error = urllib.error.URLError(ConnectionRefusedError("refused"))
+        with patch("youtube_to_wechat.wechat.urllib.request.urlopen", side_effect=error):
+            with self.assertRaises(WechatError) as raised:
+                _post_json("https://example.com", {"x": 1})
+
+        self.assertTrue(raised.exception.retryable)
+        self.assertFalse(raised.exception.outcome_unknown)
+
+    def test_post_json_maps_unsafe_url_error_to_unknown_non_retryable_error(self):
+        error = urllib.error.URLError(OSError("unsafe connection failure"))
+        with patch("youtube_to_wechat.wechat.urllib.request.urlopen", side_effect=error):
+            with self.assertRaises(WechatError) as raised:
+                _post_json("https://example.com", {"x": 1})
+
+        self.assertFalse(raised.exception.retryable)
+        self.assertTrue(raised.exception.outcome_unknown)
+
     def test_post_json_maps_socket_timeout_to_unknown_non_retryable_error(self):
         with patch("youtube_to_wechat.wechat.urllib.request.urlopen", side_effect=socket.timeout()):
+            with self.assertRaises(WechatError) as raised:
+                _post_json("https://example.com", {"x": 1})
+
+        self.assertFalse(raised.exception.retryable)
+        self.assertTrue(raised.exception.outcome_unknown)
+
+    def test_post_json_maps_timeout_error_to_unknown_non_retryable_error(self):
+        with patch("youtube_to_wechat.wechat.urllib.request.urlopen", side_effect=TimeoutError()):
+            with self.assertRaises(WechatError) as raised:
+                _post_json("https://example.com", {"x": 1})
+
+        self.assertFalse(raised.exception.retryable)
+        self.assertTrue(raised.exception.outcome_unknown)
+
+    def test_post_json_maps_remote_disconnect_to_unknown_non_retryable_error(self):
+        with patch(
+            "youtube_to_wechat.wechat.urllib.request.urlopen",
+            side_effect=http.client.RemoteDisconnected("remote disconnected"),
+        ):
+            with self.assertRaises(WechatError) as raised:
+                _post_json("https://example.com", {"x": 1})
+
+        self.assertFalse(raised.exception.retryable)
+        self.assertTrue(raised.exception.outcome_unknown)
+
+    def test_post_json_maps_connection_reset_to_unknown_non_retryable_error(self):
+        with patch("youtube_to_wechat.wechat.urllib.request.urlopen", side_effect=ConnectionResetError()):
             with self.assertRaises(WechatError) as raised:
                 _post_json("https://example.com", {"x": 1})
 
