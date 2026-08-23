@@ -1,6 +1,8 @@
 import json
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -111,6 +113,7 @@ class PublishTests(unittest.TestCase):
 
     def test_safe_mass_failure_retries_once_then_publishes_current_draft(self):
         article_path, cover_path = self._article_files()
+        next_article, next_cover = self._article_files()
         error = WechatError("network refused", retryable=True)
         batch = publish_module.WechatBatchState(mass_send_enabled=True)
         token, thumb, draft, mass, publish = self._wechat_mocks()
@@ -120,12 +123,19 @@ class PublishTests(unittest.TestCase):
                 "source", "1", article_path, cover_path, self._wechat_env(WECHAT_AUTO_PUBLISH="true"),
                 publish_module.PublishContext(batch),
             )
+            draft.mock.return_value = "draft-2"
+            later = publish_module.WechatDraftPublisher().publish(
+                "source", "2", next_article, next_cover, self._wechat_env(WECHAT_AUTO_PUBLISH="true"),
+                publish_module.PublishContext(batch),
+            )
         self.assertEqual(result.action, "publish")
         self.assertTrue(result.retried)
         self.assertEqual(result.error_message, "network refused")
         self.assertEqual(batch.mass_send_attempts, 2)
         self.assertEqual(mass.mock.call_count, 2)
-        self.assertEqual(publish.mock.call_count, 1)
+        self.assertEqual(later.action, "publish")
+        self.assertEqual(later.media_id, "draft-2")
+        self.assertEqual(publish.mock.call_count, 2)
 
     def test_safe_mass_failure_then_retry_success_reports_mass_send(self):
         article_path, cover_path = self._article_files()
@@ -203,6 +213,7 @@ class PublishTests(unittest.TestCase):
             result = publish_module.WechatDraftPublisher().publish("source", "1", article_path, cover_path, self._wechat_env(WECHAT_AUTO_PUBLISH="true"))
         self.assertEqual(result.action, "mass_send_unknown")
         self.assertIn("结果不确定", result.error_message)
+        self.assertIn("bad gateway", result.error_message)
         self.assertEqual(mass.mock.call_count, 1)
         publish.mock.assert_not_called()
 
@@ -234,6 +245,37 @@ class PublishTests(unittest.TestCase):
         mass.mock.assert_not_called()
         self.assertEqual(publish.mock.call_count, 1)
 
+    def test_later_publish_timeout_is_unknown_and_does_not_claim_draft_retained(self):
+        article_path, cover_path = self._article_files()
+        batch = publish_module.WechatBatchState(mass_send_enabled=False)
+        token, thumb, draft, mass, publish = self._wechat_mocks()
+        publish.mock.side_effect = WechatError("publish timeout", outcome_unknown=True)
+        with token, thumb, draft, mass, publish:
+            result = publish_module.WechatDraftPublisher().publish(
+                "source", "1", article_path, cover_path, self._wechat_env(WECHAT_AUTO_PUBLISH="true"),
+                publish_module.PublishContext(batch),
+            )
+        self.assertEqual(result.action, "publish_unknown")
+        self.assertEqual(result.media_id, "draft-1")
+        self.assertIn("自动发表结果不确定", result.error_message)
+        self.assertIn("请人工确认", result.error_message)
+        self.assertNotIn("草稿已保留", result.error_message)
+
+    def test_mass_rejection_then_publish_timeout_preserves_both_causes(self):
+        article_path, cover_path = self._article_files()
+        token, thumb, draft, mass, publish = self._wechat_mocks()
+        mass.mock.side_effect = WechatError("mass rejected", errcode=48001)
+        publish.mock.side_effect = WechatError("publish timeout", outcome_unknown=True)
+        with token, thumb, draft, mass, publish:
+            result = publish_module.WechatDraftPublisher().publish(
+                "source", "1", article_path, cover_path, self._wechat_env(WECHAT_AUTO_PUBLISH="true")
+            )
+        self.assertEqual(result.action, "publish_unknown")
+        self.assertIsNone(result.error_code)
+        self.assertIn("mass rejected", result.error_message)
+        self.assertIn("publish timeout", result.error_message)
+        self.assertIn("自动发表结果不确定", result.error_message)
+
     def test_failed_draft_creation_does_not_consume_batch_mass_candidate(self):
         article_path, cover_path = self._article_files()
         next_article, next_cover = self._article_files()
@@ -264,10 +306,12 @@ class PublishTests(unittest.TestCase):
             publisher._send_alerts("source", "title", {"WECOM_WEBHOOK": webhook}, publish_module.PublishResult(action="publish", media_id="draft", task_id="pub-1"))
             publisher._send_alerts("source", "title", {"WECOM_WEBHOOK": webhook}, publish_module.PublishResult(action="mass_send_unknown", media_id="draft", error_message="结果不确定"))
             publisher._send_alerts("source", "title", {"WECOM_WEBHOOK": webhook}, publish_module.PublishResult(action="publish", media_id="draft", task_id="pub-1", error_code=-1, error_message="system busy"))
+            publisher._send_alerts("source", "title", {"WECOM_WEBHOOK": webhook}, publish_module.PublishResult(action="publish_unknown", media_id="draft", error_message="自动发表结果不确定"))
         contents = [json.loads(call.args[0].data.decode("utf-8"))["markdown"]["content"] for call in urlopen.call_args_list]
         self.assertIn("请前往微信公众号后台草稿箱预览并群发", contents[0])
         self.assertIn("自动发布失败", contents[1])
         self.assertIn("草稿已保留", contents[1])
+        self.assertIn("已提交群发", contents[2])
         self.assertIn("msg_id: msg-1", contents[2])
         self.assertIn("自动发布", contents[3])
         self.assertIn("未群发", contents[3])
@@ -275,6 +319,8 @@ class PublishTests(unittest.TestCase):
         self.assertIn("结果不确定", contents[4])
         self.assertIn("publish_id: pub-1", contents[5])
         self.assertIn("system busy", contents[5])
+        self.assertIn("自动发表结果不确定", contents[6])
+        self.assertIn("手动核对", contents[6])
 
     def test_malformed_wecom_webhook_is_nonfatal(self):
         publisher = publish_module.WechatDraftPublisher()
@@ -284,6 +330,24 @@ class PublishTests(unittest.TestCase):
             {"WECOM_WEBHOOK": "\n"},
             publish_module.PublishResult(action="draft", media_id="draft"),
         )
+
+    def test_final_publish_results_are_logged_without_a_webhook(self):
+        output = io.StringIO()
+        publisher = publish_module.WechatDraftPublisher()
+        with redirect_stdout(output):
+            publisher._log_result("source", publish_module.PublishResult(action="draft", media_id="draft"))
+            publisher._log_result("source", publish_module.PublishResult(action="mass_send", media_id="draft", task_id="msg-1"))
+            publisher._log_result("source", publish_module.PublishResult(action="publish", media_id="draft", task_id="pub-1", error_message="mass rejected"))
+            publisher._log_result("source", publish_module.PublishResult(action="mass_send_unknown", media_id="draft", error_message="timeout"))
+            publisher._log_result("source", publish_module.PublishResult(action="publish_unknown", media_id="draft", error_message="publish timeout"))
+        logs = output.getvalue()
+        self.assertIn("草稿已保留", logs)
+        self.assertIn("已提交群发", logs)
+        self.assertIn("msg_id: msg-1", logs)
+        self.assertIn("publish_id: pub-1", logs)
+        self.assertIn("mass rejected", logs)
+        self.assertIn("群发结果不确定", logs)
+        self.assertIn("自动发表结果不确定", logs)
     def test_wechat_publisher_missing_env_does_not_raise(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
