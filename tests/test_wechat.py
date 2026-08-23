@@ -65,6 +65,22 @@ class WechatTests(unittest.TestCase):
         self.assertFalse(raised.exception.retryable)
         self.assertFalse(raised.exception.outcome_unknown)
 
+    def test_raise_api_error_normalizes_integer_formatted_string_code(self):
+        with self.assertRaises(WechatError) as raised:
+            wechat._raise_api_error({"errcode": " 40007 ", "errmsg": "invalid media"}, "test")
+
+        self.assertEqual(raised.exception.errcode, 40007)
+
+    def test_raise_api_error_rejects_non_integer_errcode_values(self):
+        for raw_errcode in (False, True, 0.0, 0.5, 1.5, [], {}):
+            with self.subTest(raw_errcode=raw_errcode):
+                with self.assertRaises(WechatError) as raised:
+                    wechat._raise_api_error({"errcode": raw_errcode}, "test")
+
+                self.assertIsNone(raised.exception.errcode)
+                self.assertFalse(raised.exception.retryable)
+                self.assertTrue(raised.exception.outcome_unknown)
+
     def test_raise_api_error_rejects_nonnumeric_code_as_structured_error(self):
         with self.assertRaises(WechatError) as raised:
             wechat._raise_api_error({"errcode": "not-a-code"}, "test")

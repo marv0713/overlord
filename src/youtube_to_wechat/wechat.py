@@ -276,14 +276,18 @@ def _normalize_api_errcode(data: dict[str, Any], action: str) -> int:
     raw_errcode = data.get("errcode")
     if raw_errcode is None:
         return 0
-    try:
-        return int(raw_errcode)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise WechatError(
-            f"WeChat {action} error: invalid errcode in {data}",
-            retryable=False,
-            outcome_unknown=True,
-        ) from exc
+    if isinstance(raw_errcode, int) and not isinstance(raw_errcode, bool):
+        return raw_errcode
+    if isinstance(raw_errcode, str):
+        normalized = raw_errcode.strip()
+        digits = normalized[1:] if normalized[:1] in {"+", "-"} else normalized
+        if digits and all("0" <= character <= "9" for character in digits):
+            return int(normalized)
+    raise WechatError(
+        f"WeChat {action} error: invalid errcode in {data}",
+        retryable=False,
+        outcome_unknown=True,
+    )
 
 
 def _endpoint_path(url: str) -> str:
