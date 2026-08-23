@@ -1,7 +1,10 @@
+import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts.process_sources import (
@@ -13,6 +16,7 @@ from scripts.process_sources import (
     _resolve_writer_profile,
     _should_push_output,
     collect_source_candidates,
+    main,
     process_candidate,
     process_episode,
     process_source,
@@ -26,7 +30,7 @@ from youtube_to_wechat.youtube_channel import ChannelVideo
 
 
 class ProcessSourcesTests(unittest.TestCase):
-    def test_record_publish_result_preserves_run_fields_and_persists_exact_result(self):
+    def test_record_publish_result_atomically_replaces_run_data_with_exact_result(self):
         result = PublishResult(
             action="mass_send",
             media_id="media-123",
@@ -40,7 +44,8 @@ class ProcessSourcesTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            _record_publish_result(run_json_path, result)
+            with patch("scripts.process_sources.os.replace", wraps=os.replace) as replace:
+                _record_publish_result(run_json_path, result)
 
             self.assertEqual(
                 json.loads(run_json_path.read_text(encoding="utf-8")),
@@ -51,6 +56,43 @@ class ProcessSourcesTests(unittest.TestCase):
                 },
             )
             self.assertTrue(run_json_path.read_text(encoding="utf-8").endswith("\n"))
+            temporary_path = Path(replace.call_args.args[0])
+            self.assertEqual(temporary_path.parent, run_json_path.parent)
+            self.assertFalse(temporary_path.exists())
+
+    def test_record_publish_result_keeps_original_and_cleans_temp_when_replace_fails(self):
+        result = PublishResult(action="draft", media_id="media-123")
+        original = b'{"status":"ok", "issue":"No.001"}\n'
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_json_path = Path(temp_dir) / "run.json"
+            run_json_path.write_bytes(original)
+            with (
+                patch("scripts.process_sources.os.replace", side_effect=OSError("replace failed")),
+                patch("sys.stderr", new_callable=io.StringIO) as stderr,
+            ):
+                _record_publish_result(run_json_path, result)
+
+            self.assertEqual(run_json_path.read_bytes(), original)
+            self.assertEqual(list(run_json_path.parent.glob(".run.json.*.tmp")), [])
+            self.assertIn('"action": "draft"', stderr.getvalue())
+            self.assertIn("keeping existing run record", stderr.getvalue())
+
+    def test_record_publish_result_keeps_original_and_cleans_temp_when_write_fails(self):
+        result = PublishResult(action="publish", media_id="media-123")
+        original = b'{"status":"ok", "issue":"No.001"}\n'
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_json_path = Path(temp_dir) / "run.json"
+            run_json_path.write_bytes(original)
+            with (
+                patch("scripts.process_sources.json.dump", side_effect=OSError("write failed")),
+                patch("sys.stderr", new_callable=io.StringIO) as stderr,
+            ):
+                _record_publish_result(run_json_path, result)
+
+            self.assertEqual(run_json_path.read_bytes(), original)
+            self.assertEqual(list(run_json_path.parent.glob(".run.json.*.tmp")), [])
+            self.assertIn('"action": "publish"', stderr.getvalue())
+            self.assertIn("keeping existing run record", stderr.getvalue())
 
     def test_record_publish_result_noops_for_none_missing_or_invalid_run_json(self):
         result = PublishResult(action="draft", media_id="media-123")
@@ -122,6 +164,91 @@ class ProcessSourcesTests(unittest.TestCase):
         self.assertEqual(publish_article.call_count, 2)
         self.assertIs(publish_article.call_args_list[0].kwargs["context"], context)
         self.assertIs(publish_article.call_args_list[1].kwargs["context"], context)
+
+    def test_main_reuses_one_publish_context_and_records_each_candidate_result(self):
+        first_source = SourceConfig(
+            type="youtube_channel",
+            name="First Source",
+            url="https://example.com/first",
+            destinations=["wechat_draft"],
+        )
+        second_source = SourceConfig(
+            type="youtube_channel",
+            name="Second Source",
+            url="https://example.com/second",
+            destinations=["wechat_draft"],
+        )
+        first_candidate = SourceCandidate(
+            source=first_source,
+            source_slug="first-source",
+            video=ChannelVideo("first-id", "First", "https://example.com/first-id", 900),
+        )
+        second_candidate = SourceCandidate(
+            source=second_source,
+            source_slug="second-source",
+            video=ChannelVideo("second-id", "Second", "https://example.com/second-id", 900),
+        )
+        results = [
+            PublishResult(action="mass_send", media_id="first-media", task_id="first-task"),
+            PublishResult(action="publish", media_id="second-media", task_id="second-task"),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            cover_path = temp_path / "cover.png"
+            cover_path.write_bytes(b"cover")
+
+            def create_output(*, candidate, output_base, **_kwargs):
+                output_dir = output_base / candidate.source_slug / candidate.video.video_id
+                output_dir.mkdir(parents=True)
+                (output_dir / "article.md").write_text("# Article\n", encoding="utf-8")
+                (output_dir / "run.json").write_text(
+                    json.dumps({"status": "ok", "article_status": "ok", "issue": candidate.video.video_id}) + "\n",
+                    encoding="utf-8",
+                )
+                return 1
+
+            env = {"WECHAT_MASS_SEND": "true"}
+            with (
+                patch("youtube_to_wechat.wechat.load_env", return_value=env),
+                patch("scripts.process_sources.load_source_config", return_value=SimpleNamespace(sources=[])),
+                patch("scripts.process_sources.create_store", return_value=object()),
+                patch(
+                    "scripts.process_sources.collect_source_candidates",
+                    return_value=[first_candidate, second_candidate],
+                ),
+                patch("scripts.process_sources.process_candidate", side_effect=create_output),
+                patch("scripts.process_sources.publish_article", side_effect=results) as publish_article,
+                patch("scripts.process_sources._build_publish_context", wraps=_build_publish_context) as build_context,
+                patch(
+                    "sys.argv",
+                    [
+                        "process_sources.py",
+                        "--push",
+                        "--max-items",
+                        "2",
+                        "--output-dir",
+                        str(temp_path),
+                        "--cover",
+                        str(cover_path),
+                    ],
+                ),
+            ):
+                self.assertEqual(main(), 0)
+
+            self.assertEqual(build_context.call_count, 1)
+            self.assertEqual(publish_article.call_count, 2)
+            shared_context = publish_article.call_args_list[0].kwargs["context"]
+            self.assertIs(publish_article.call_args_list[1].kwargs["context"], shared_context)
+            self.assertEqual(
+                json.loads((temp_path / "first-source" / "first-id" / "run.json").read_text(encoding="utf-8"))["wechat_publish"],
+                results[0].to_dict(),
+            )
+            self.assertEqual(
+                json.loads((temp_path / "second-source" / "second-id" / "run.json").read_text(encoding="utf-8"))["wechat_publish"],
+                results[1].to_dict(),
+            )
+
     def test_auto_profile_routes_explicit_company_list_to_interview(self):
         self.assertEqual(
             _resolve_writer_profile(

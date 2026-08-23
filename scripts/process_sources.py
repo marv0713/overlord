@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -253,10 +254,34 @@ def _record_publish_result(run_json_path: Path, result: PublishResult | None) ->
         return
 
     run["wechat_publish"] = result.to_dict()
-    run_json_path.write_text(
-        json.dumps(run, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    serialized_result = json.dumps(result.to_dict(), ensure_ascii=False)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=run_json_path.parent,
+            prefix=f".{run_json_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            json.dump(run, temporary_file, ensure_ascii=False, indent=2)
+            temporary_file.write("\n")
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, run_json_path)
+    except OSError as exc:
+        print(
+            f"Failed to persist WeChat publish outcome {serialized_result}; "
+            f"keeping existing run record: {exc}",
+            file=sys.stderr,
+        )
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _build_publish_context(env: dict[str, str]) -> PublishContext:
