@@ -52,12 +52,16 @@ WECHAT_MASS_SEND=true
 
 群发提交成功只代表微信已接受任务；最终送达状态仍是异步的，本期不轮询 `message/mass/get`。
 
-`WechatError` 扩展为结构化异常，至少携带 `errcode`、`retryable` 和 `outcome_unknown`。微信 JSON 的非零 `errcode` 记录原始错误码且一律不重试；HTTP 4xx 一律不重试。`_post_json` 把底层异常映射为以下两类：
+`WechatError` 扩展为结构化异常，至少携带 `errcode`、`retryable` 和 `outcome_unknown`。微信 JSON 的非零 `errcode` 记录原始错误码且一律不重试；HTTP 4xx 一律不重试。这里也包括微信定义为“系统繁忙、可稍后重试”的 `errcode=-1`：本设计刻意不重试它，以偶发降级为公开发表为代价，换取群发提交结果没有歧义、不会重复群发。
+
+`_post_json` 必须先捕获 `urllib.error.HTTPError`，按状态码区分 HTTP 4xx 与 5xx，再捕获通用的 `urllib.error.URLError`；因为 `HTTPError` 是 `URLError` 的子类，反向捕获会把已经到达微信的 HTTP 4xx 错误误判成连接前失败。底层异常映射为以下两类：
 
 - 可安全重试：DNS 解析失败、连接被拒绝等能够确认 HTTP 请求尚未发出的连接前错误，`retryable=true`、`outcome_unknown=false`。
 - 提交结果不确定：`socket.timeout`、请求发出后的连接中断、远端断开及 HTTP 5xx，`retryable=false`、`outcome_unknown=true`。
 
-结果不确定时调用 `get_draft` 辅助判断：草稿不存在则记录“群发可能已提交，`msg_id` 未知”；草稿仍存在或查询自身失败则记录“群发结果不确定”。两种结果都禁止重试和自动发表该候选。仅凭草稿暂时仍存在不能证明原群发请求不会稍后完成，因此不能把它作为安全重试依据。
+结果不确定时调用 `get_draft` 辅助判断。只有同时满足以下前提，`draft/get` 返回 `errcode=40007` 且 `errmsg` 表示 `invalid media_id` 才映射为“草稿很可能已被消费”：该 `media_id` 是本批刚由 `draft/add` 成功创建、查询使用同一公众号的 access token、调用期间没有其他代码删除或修改草稿。`40007` 之外的非零错误码、HTTP/网络错误或格式异常一律映射为“查询失败”，不能推断草稿已消费。
+
+草稿很可能已消费时记录“很可能已群发，请人工确认，`msg_id` 未知”；草稿仍存在或查询失败时记录“群发结果不确定”。所有分支都禁止重试和自动发表该候选。仅凭草稿暂时仍存在不能证明原群发请求不会稍后完成，因此不能把它作为安全重试依据。
 
 ### 2. 批次状态
 
@@ -65,22 +69,28 @@ WECHAT_MASS_SEND=true
 
 ```text
 mass_send_enabled  ← WECHAT_MASS_SEND
-mass_send_attempted ← false
+mass_send_attempts ← 0
 
 每篇草稿创建成功后：
   if auto_publish=false:
       保留草稿
-  elif mass_send_enabled 且 mass_send_attempted=false:
-      mass_send_attempted=true
-      尝试群发（仅确认请求未发出时安全重试一次）
-      成功：后续文章仅发表
-      明确拒绝：当前文章及后续文章仅发表
-      结果不确定：当前文章不重试、不发表；后续文章仅发表
+  elif mass_send_enabled 且 mass_send_attempts=0:
+      mass_send_attempts += 1
+      第一次尝试群发
+      成功：结束当前篇；后续文章仅发表
+      明确拒绝：发表当前篇；后续文章仅发表
+      结果不确定：当前篇不重试、不发表；后续文章仅发表
+      确认请求未发出：
+          mass_send_attempts += 1
+          安全重试一次
+          成功：结束当前篇；后续文章仅发表
+          明确拒绝或再次确认请求未发出：发表当前篇；后续文章仅发表
+          结果不确定：当前篇不再重试、不发表；后续文章仅发表
   else:
       发表
 ```
 
-因此无论一批有多少文章，最多只有一篇会成为群发候选。正常路径只调用一次群发接口；仅连接前失败的安全重试路径允许第二次调用。第二篇及之后的文章永远不会调用群发接口。
+因此无论一批有多少文章，最多只有一篇会成为群发候选。`mass_send_attempts` 的取值只能是 0、1 或 2：正常路径只调用一次群发接口；仅连接前失败的安全重试路径允许第二次调用；达到 2 后禁止第三次调用。第二篇及之后的文章永远不会调用群发接口。
 
 草稿创建失败的文章不消耗群发资格；下一篇成功创建草稿的文章成为群发候选。封面缺失、凭据缺失或草稿创建失败均不执行发表/群发，并写清错误日志。
 
@@ -100,13 +110,14 @@ mass_send_attempted ← false
 
 ```text
 [Source] WeChat: mass send submitted msg_id=...
-[Source] WeChat: mass send outcome unknown; no retry or publish media_id=...
+[Source] WeChat: draft consumed; mass send very likely submitted, msg_id unknown; verify manually media_id=...
+[Source] WeChat: mass send outcome unknown; no retry or publish; verify manually media_id=...
 [Source] WeChat: published without mass send publish_id=...
 [Source] WeChat: mass send unavailable (errcode=...), published instead publish_id=...
 [Source] WeChat: publish failed; draft retained media_id=...
 ```
 
-如果配置了 `WECOM_WEBHOOK`，通知文案与实际结果一致：首篇显示“已提交群发”，其余显示“已自动发表、未群发”，明确拒绝后的降级显示失败原因与公开发表结果，结果不确定时明确提示人工核查且不声称草稿仍保留。默认模式 `WECHAT_AUTO_PUBLISH=false` 继续使用现有“请前往草稿箱预览并群发”通知；只有自动模式改用新文案。
+如果配置了 `WECOM_WEBHOOK`，通知文案与实际结果一致：首篇显示“已提交群发”，其余显示“已自动发表、未群发”，明确拒绝后的降级显示失败原因与公开发表结果。草稿已消费分支提示“很可能已群发，请人工确认”；草稿仍存在或查询失败时提示“结果不确定，请人工确认”，且不声称草稿一定保留。默认模式 `WECHAT_AUTO_PUBLISH=false` 继续使用现有“请前往草稿箱预览并群发”通知；只有自动模式改用新文案。
 
 ## 非目标
 
@@ -135,7 +146,7 @@ mass_send_attempted ← false
 
 7. 首篇群发遇到一次确认请求未发出的 DNS/连接前错误时安全重试一次；重试成功时不调用该篇发表接口，后续文章只发表。
 8. 首篇群发遇到额度/权限/内容校验类微信错误时不重试；该篇调用发表接口一次，后续文章只发表。
-9. 首篇群发发生读超时、请求后的连接中断或 HTTP 5xx 时调用 `draft/get`：若草稿不存在，记录 `mass_send_unknown` 和“可能已提交，msg_id 未知”；若草稿仍存在或查询失败，记录“结果不确定”。所有结果不确定分支均不得再次群发或发表首篇，后续文章只发表。
+9. 首篇群发发生读超时、请求后的连接中断或 HTTP 5xx 时调用 `draft/get`：在“本批刚创建、同账号、未被其他代码操作”的前提下，只有 `errcode=40007` 且 `errmsg` 表示 `invalid media_id` 才记录 `mass_send_unknown` 和“很可能已群发，请人工确认，msg_id 未知”；其他非零错误码、查询网络错误或异常响应均记录“结果不确定”。所有结果不确定分支均不得再次群发或发表首篇，后续文章只发表。
 10. 安全重试再次遇到明确的连接前失败时不进行第三次调用，并自动发表该候选；安全重试发生结果不确定错误时按标准 9 处理。
 11. 某篇发表接口失败时，草稿保留，`run.json` 与日志记录失败；不得重复创建草稿或把同一草稿再次群发。
 
@@ -143,7 +154,7 @@ mass_send_attempted ← false
 
 12. 每篇成功草稿的 `run.json` 记录草稿 ID、最终动作及对应任务 ID（群发 `msg_id` 或发表 `publish_id`）；结果不确定时保留草稿 ID 并明确记录 `msg_id` 未知。
 13. 配置企业微信 webhook 时，首篇群发、后续发表、明确拒绝后降级、结果不确定四种通知文本均与实际动作匹配；默认草稿模式保留原有人工操作提示。
-14. 自动化测试覆盖以上分支，包含 `URLError`、`socket.timeout`、HTTP 4xx、HTTP 5xx、微信非零 `errcode` 及 Protocol 兼容性，且现有全量测试套件保持通过。
+14. 自动化测试覆盖以上分支，包含 `mass_send_attempts` 的 0/1/2 状态、`URLError`、`socket.timeout`、HTTP 4xx、HTTP 5xx、微信 `errcode=-1`、`draft/get` 的 `40007`/其他错误码及 Protocol 兼容性，且现有全量测试套件保持通过。测试必须证明 `HTTPError` 在通用 `URLError` 之前分类，且任何路径都不会发起第三次群发调用。
 
 ## 实施边界
 
