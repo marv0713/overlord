@@ -216,8 +216,12 @@ class WechatDraftPublisher:
                     "content": f"🎉 **新文章草稿已生成并推送**\n\n> **来源**: {source_name}\n> **标题**: {title}\n> **操作**: {operation}"
                 }
             }
-            req = urllib.request.Request(wecom_webhook, data=json.dumps(msg).encode('utf-8'), headers={'Content-Type': 'application/json'})
             try:
+                req = urllib.request.Request(
+                    wecom_webhook,
+                    data=json.dumps(msg).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                )
                 urllib.request.urlopen(req, timeout=10)
                 print(f"[{source_name}] WeCom alert sent.")
             except Exception as e:
