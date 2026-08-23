@@ -1,7 +1,10 @@
+import http.client
 import ssl
 import json
 import mimetypes
 import os
+import socket
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -9,7 +12,18 @@ from typing import Any, Optional
 
 
 class WechatError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        errcode: int | None = None,
+        retryable: bool = False,
+        outcome_unknown: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.errcode = errcode
+        self.retryable = retryable
+        self.outcome_unknown = outcome_unknown
 
 
 MOBILE_TEXT_STYLE = (
@@ -124,6 +138,7 @@ def get_access_token(appid: str, appsecret: str) -> str:
         {"grant_type": "client_credential", "appid": appid, "secret": appsecret}
     )
     data = _get_json(f"https://api.weixin.qq.com/cgi-bin/token?{params}")
+    _raise_api_error(data, "access_token")
     token = data.get("access_token")
     if not token:
         raise WechatError(f"WeChat access_token error: {data}")
@@ -136,6 +151,7 @@ def upload_permanent_thumb(access_token: str, image_path: Path) -> str:
         field_name="media",
         file_path=image_path,
     )
+    _raise_api_error(data, "thumb upload")
     media_id = data.get("media_id")
     if not media_id:
         raise WechatError(f"WeChat thumb upload error: {data}")
@@ -149,6 +165,7 @@ def upload_content_image(access_token: str, image_path: Path) -> str:
         field_name="media",
         file_path=image_path,
     )
+    _raise_api_error(data, "content image upload")
     url = data.get("url")
     if not url:
         raise WechatError(f"WeChat content image upload error: {data}")
@@ -160,10 +177,53 @@ def add_draft(access_token: str, article: dict[str, Any]) -> str:
         f"https://api.weixin.qq.com/cgi-bin/draft/add?access_token={urllib.parse.quote(access_token)}",
         {"articles": [article]},
     )
+    _raise_api_error(data, "add draft")
     media_id = data.get("media_id")
     if not media_id:
         raise WechatError(f"WeChat add draft error: {data}")
     return media_id
+
+
+def submit_mass_send(access_token: str, media_id: str) -> str:
+    data = _post_json(
+        f"https://api.weixin.qq.com/cgi-bin/message/mass/sendall?access_token={urllib.parse.quote(access_token)}",
+        {
+            "filter": {"is_to_all": True},
+            "mpnews": {"media_id": media_id},
+            "msgtype": "mpnews",
+            "send_ignore_reprint": 1,
+        },
+    )
+    _raise_api_error(data, "mass send")
+    msg_id = data.get("msg_id")
+    if not msg_id:
+        raise WechatError(f"WeChat mass send error: missing msg_id in {data}")
+    return str(msg_id)
+
+
+def submit_publish(access_token: str, media_id: str) -> str:
+    data = _post_json(
+        f"https://api.weixin.qq.com/cgi-bin/freepublish/submit?access_token={urllib.parse.quote(access_token)}",
+        {"media_id": media_id},
+    )
+    _raise_api_error(data, "publish")
+    publish_id = data.get("publish_id")
+    if not publish_id:
+        raise WechatError(f"WeChat publish error: missing publish_id in {data}")
+    return str(publish_id)
+
+
+def get_draft(access_token: str, media_id: str) -> dict[str, Any] | None:
+    data = _post_json(
+        f"https://api.weixin.qq.com/cgi-bin/draft/get?access_token={urllib.parse.quote(access_token)}",
+        {"media_id": media_id},
+    )
+    errcode = data.get("errcode")
+    errmsg = data.get("errmsg", "")
+    if errcode == 40007 and "invalid media_id" in str(errmsg).lower():
+        return None
+    _raise_api_error(data, "get draft")
+    return data
 
 
 def build_draft_article(
@@ -207,6 +267,17 @@ def _get_json(url: str) -> dict[str, Any]:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _raise_api_error(data: dict[str, Any], action: str) -> None:
+    errcode = data.get("errcode", 0)
+    if errcode != 0:
+        raise WechatError(
+            f"WeChat {action} error: {data}",
+            errcode=errcode,
+            retryable=False,
+            outcome_unknown=False,
+        )
+
+
 def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
@@ -215,8 +286,35 @@ def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
         headers={"Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=60, context=ssl._create_unverified_context()) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=60, context=ssl._create_unverified_context()) as response:
+            try:
+                return json.loads(response.read().decode("utf-8"))
+            except json.JSONDecodeError as exc:
+                raise WechatError(
+                    f"WeChat {url} returned invalid JSON: {exc}",
+                    retryable=False,
+                    outcome_unknown=True,
+                ) from exc
+    except urllib.error.HTTPError as exc:
+        raise WechatError(
+            f"WeChat HTTP error {exc.code} for {url}: {exc.reason}",
+            retryable=False,
+            outcome_unknown=exc.code >= 500,
+        ) from exc
+    except urllib.error.URLError as exc:
+        safe_retry = isinstance(exc.reason, (socket.gaierror, ConnectionRefusedError))
+        raise WechatError(
+            f"WeChat connection error for {url}: {exc.reason}",
+            retryable=safe_retry,
+            outcome_unknown=not safe_retry,
+        ) from exc
+    except (socket.timeout, TimeoutError, http.client.RemoteDisconnected, ConnectionResetError) as exc:
+        raise WechatError(
+            f"WeChat connection outcome unknown for {url}: {exc}",
+            retryable=False,
+            outcome_unknown=True,
+        ) from exc
 
 
 def _multipart_upload(url: str, field_name: str, file_path: Path) -> dict[str, Any]:
