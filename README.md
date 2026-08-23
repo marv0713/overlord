@@ -1,6 +1,6 @@
 # overlord
 
-`overlord` 是一套基于 **Serverless 云端架构的自动化内容处理流水线**。它可以无人值守地从公开内容源抓取素材，调用 AI 生成深度文章，并自动排版推送到微信公众号草稿箱。系统采用“配置与代码解耦”的云端优先设计，同时向下兼容纯本地的开发和测试运行。当前支持 YouTube 频道和播客 RSS（包括小宇宙/RSSHub）两类来源。
+`overlord` 是一套基于 **Serverless 云端架构的自动化内容处理流水线**。它可以无人值守地从公开内容源抓取素材，调用 AI 生成深度文章，并自动排版推送到微信公众号草稿箱；按配置也可以继续自动发布。默认仍是安全的草稿模式，不会自动发布。系统采用“配置与代码解耦”的云端优先设计，同时向下兼容纯本地的开发和测试运行。当前支持 YouTube 频道和播客 RSS（包括小宇宙/RSSHub）两类来源。
 
 ## 能做什么
 
@@ -11,7 +11,7 @@
 - 按全局系列编号生成公众号文章。
 - 按不同博主/视频类型选择不同 writer profile。
 - 生成本地 `article.md`、`article.html`、`transcript.txt`、`meta.json` 和 `run.json`。
-- 可选推送到微信公众号草稿箱，不自动发布。
+- 可选推送到微信公众号草稿箱；默认仅创建草稿，也可按配置自动发布。
 
 ## 核心概念
 
@@ -82,7 +82,19 @@ SUPABASE_DB_URL=postgresql://<user>:<password>@<host>:<port>/postgres
 WECHAT_APPID=
 WECHAT_APPSECRET=
 WECHAT_AUTHOR=
+WECHAT_AUTO_PUBLISH=false
+WECHAT_MASS_SEND=true
 ```
+
+微信公众号发布开关：
+
+- `WECHAT_AUTO_PUBLISH=false` 或未设置：所有成功结果都保留为草稿，沿用当前的人工提醒流程。
+- `WECHAT_AUTO_PUBLISH=true` 且 `WECHAT_MASS_SEND=false`：每篇成功创建的草稿都会自动发布，但不会推送给粉丝。
+- `WECHAT_AUTO_PUBLISH=true` 且 `WECHAT_MASS_SEND=true` 或未设置：每个 cron 批次中第一篇成功创建的草稿会提交群发给全部粉丝，后续草稿自动发布但不推送给粉丝。`WECHAT_MASS_SEND` 只有在自动发布开启时才生效；未设置时代码默认为 `true`。
+
+启用自动发布前，公众号账号必须具备群发和发布（`freepublish`）权限，并将 VPS IP 加入公众号 API 白名单。自动 API 无法设置合集，也无法设置“来源：官方 AI 生成”标记；文章正文中的 AI 生成披露仍会保留。
+
+首次群发或发布的结果如果出现歧义，该条不会自动重试或回退，必须人工核验；不要直接盲目重跑整个批次。API 与后端共享配额：对于群发，只有确认请求在发送前失败时才安全重试一次，之后的条目不会再提交群发。提交群发是异步操作，不等同于已经送达粉丝。
 
 复制来源配置示例：
 
@@ -230,4 +242,4 @@ PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
 - 不提交真实 `config/sources.json`。
 - 不提交 `data/processed.json`。
 - 不提交 `outputs/` 下的生成文章、封面或草稿素材。
-- 只创建公众号草稿，不自动发布。
+- 默认只创建公众号草稿；启用自动发布后才会按上述开关发布。
