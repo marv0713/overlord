@@ -84,6 +84,7 @@ WECHAT_APPSECRET=
 WECHAT_AUTHOR=
 WECHAT_AUTO_PUBLISH=false
 WECHAT_MASS_SEND=true
+WECOM_WEBHOOK=
 ```
 
 微信公众号发布开关：
@@ -92,9 +93,11 @@ WECHAT_MASS_SEND=true
 - `WECHAT_AUTO_PUBLISH=true` 且 `WECHAT_MASS_SEND=false`：每篇成功创建的草稿都会自动发布，但不会推送给粉丝。
 - `WECHAT_AUTO_PUBLISH=true` 且 `WECHAT_MASS_SEND=true` 或未设置：每个 cron 批次中第一篇成功创建的草稿会提交群发给全部粉丝，后续草稿自动发布但不推送给粉丝。`WECHAT_MASS_SEND` 只有在自动发布开启时才生效；未设置时代码默认为 `true`。
 
-启用自动发布前，公众号账号必须具备群发和发布（`freepublish`）权限，并将 VPS IP 加入公众号 API 白名单。自动 API 无法设置合集，也无法设置“来源：官方 AI 生成”标记；文章正文中的 AI 生成披露仍会保留。
+启用自动发布前，公众号账号必须具备发布（`freepublish`）权限；只有 `WECHAT_MASS_SEND` 的有效值为 `true`（显式设置为 `true` 或未设置而采用默认值）时才需要群发权限。相关 API 调用还要求将 VPS IP 加入公众号 API 白名单。自动 API 无法设置合集，也无法设置“来源：官方 AI 生成”标记；文章正文中的 AI 生成披露仍会保留。
 
-首次群发或发布的结果如果出现歧义，该条不会自动重试或回退，必须人工核验；不要直接盲目重跑整个批次。API 与后端共享配额：对于群发，只有确认请求在发送前失败时才安全重试一次，之后的条目不会再提交群发。提交群发是异步操作，不等同于已经送达粉丝。
+明确可判断的群发拒绝或失败（例如配额、权限、校验等错误）会为该文章回退到 `freepublish` 公开发布；群发结果歧义时不会自动重试或回退，必须人工核验，不要直接盲目重跑整个批次。API 与后端共享配额：群发只有在确认请求于发送前失败时才安全重试一次；一旦进入歧义状态，后续条目不会再提交群发。提交群发是异步操作，不等同于已经送达粉丝。
+
+设置 `WECOM_WEBHOOK` 后，成功推送和需要人工核验的结果会按结果发送企业微信机器人提醒；未设置时不发送该提醒。终端日志以及每次运行的 `run.json` 中 `wechat_publish` 记录（包括 `mass_send_unknown`、`publish_unknown` 操作）是核对后台状态的证据和人工检查入口。
 
 复制来源配置示例：
 
@@ -173,6 +176,15 @@ PYTHONPATH=src .venv/bin/python scripts/push_wechat_draft.py \
   outputs/youtube/<source_slug>/<video_id>/article.md \
   --cover outputs/youtube/<source_slug>/<video_id>/cover.png
 ```
+
+批量生成并按配置推送（包括自动发布）时，来源配置的 `destinations` 必须包含 `wechat_draft`，例如 `"destinations": ["wechat_draft"]`：
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/process_sources.py \
+  --generate-article --push --max-items 1
+```
+
+上面的 `--push` 入口才会读取 `WECHAT_AUTO_PUBLISH` 和 `WECHAT_MASS_SEND`。`scripts/push_wechat_draft.py` 是仅创建草稿的手动入口，会忽略这两个自动发布开关。
 
 生成封面图：
 
