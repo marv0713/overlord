@@ -3,6 +3,7 @@ import re
 import smtplib
 import sys
 import urllib.request
+from dataclasses import asdict, dataclass
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Protocol
@@ -17,20 +18,63 @@ from youtube_to_wechat.wechat import (
     _markdown_to_html,
     add_draft,
     build_draft_article,
+    get_draft,
     get_access_token,
     require_env,
+    submit_mass_send,
+    submit_publish,
     upload_permanent_thumb,
 )
 
 
+@dataclass
+class WechatBatchState:
+    mass_send_enabled: bool
+    mass_send_attempts: int = 0
+
+
+@dataclass
+class PublishContext:
+    wechat_batch: WechatBatchState | None = None
+
+
+@dataclass
+class PublishResult:
+    action: str
+    media_id: str = ""
+    task_id: str = ""
+    retried: bool = False
+    error_code: int | None = None
+    error_message: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
 class Publisher(Protocol):
-    def publish(self, source_name: str, issue: str, article_path: Path, cover_path: Path, env: dict) -> None:
+    def publish(
+        self,
+        source_name: str,
+        issue: str,
+        article_path: Path,
+        cover_path: Path,
+        env: dict,
+        context: PublishContext | None = None,
+    ) -> PublishResult | None:
         ...
 
 
 class WechatDraftPublisher:
     """Pushes article to WeChat Official Account as a draft."""
-    def publish(self, source_name: str, issue: str, article_path: Path, cover_path: Path, env: dict) -> None:
+    def publish(
+        self,
+        source_name: str,
+        issue: str,
+        article_path: Path,
+        cover_path: Path,
+        env: dict,
+        context: PublishContext | None = None,
+    ) -> PublishResult | None:
         if not cover_path.exists():
             print(f"[{source_name}] WechatDraftPublisher: missing cover image at {cover_path}, skipping.", file=sys.stderr)
             return
@@ -54,19 +98,122 @@ class WechatDraftPublisher:
             )
             media_id = add_draft(token, article_payload)
             print(f"[{source_name}] WechatDraftPublisher: draft created {media_id}")
-            
-            # Send notification alerts if configured
-            self._send_alerts(source_name, title, env)
+            result = self._route_created_draft(token, media_id, env, context)
+            self._send_alerts(source_name, title, env, result)
+            return result
         except WechatError as exc:
             print(f"[{source_name}] WechatDraftPublisher Error: {exc}", file=sys.stderr)
 
-    def _send_alerts(self, source_name: str, title: str, env: dict) -> None:
+    def _route_created_draft(
+        self,
+        token: str,
+        media_id: str,
+        env: dict,
+        context: PublishContext | None,
+    ) -> PublishResult:
+        if not _env_bool(env.get("WECHAT_AUTO_PUBLISH"), default=False):
+            return PublishResult(action="draft", media_id=media_id)
+
+        state = context.wechat_batch if context and context.wechat_batch else WechatBatchState(
+            mass_send_enabled=_env_bool(env.get("WECHAT_MASS_SEND"), default=True)
+        )
+        if not state.mass_send_enabled or state.mass_send_attempts > 0:
+            return self._publish_created_draft(token, media_id)
+
+        state.mass_send_attempts += 1
+        try:
+            msg_id = submit_mass_send(token, media_id)
+            return PublishResult(action="mass_send", media_id=media_id, task_id=msg_id)
+        except WechatError as exc:
+            return self._handle_mass_failure(token, media_id, state, exc)
+
+    def _handle_mass_failure(
+        self,
+        token: str,
+        media_id: str,
+        state: WechatBatchState,
+        error: WechatError,
+    ) -> PublishResult:
+        if error.outcome_unknown:
+            return self._reconcile_mass_send(token, media_id, error)
+
+        if error.errcode is not None or not error.retryable:
+            return self._publish_created_draft(token, media_id, error)
+
+        # The initial candidate always starts at zero, so a retry is bounded to
+        # exactly one more mass-send call for this batch.
+        if state.mass_send_attempts < 2:
+            state.mass_send_attempts += 1
+            try:
+                msg_id = submit_mass_send(token, media_id)
+                return PublishResult(action="mass_send", media_id=media_id, task_id=msg_id, retried=True)
+            except WechatError as retry_error:
+                if retry_error.outcome_unknown:
+                    result = self._reconcile_mass_send(token, media_id, retry_error)
+                    result.retried = True
+                    return result
+                return self._publish_created_draft(token, media_id, retry_error, retried=True)
+
+        return self._publish_created_draft(token, media_id, error, retried=True)
+
+    def _publish_created_draft(
+        self,
+        token: str,
+        media_id: str,
+        mass_error: WechatError | None = None,
+        retried: bool = False,
+    ) -> PublishResult:
+        try:
+            publish_id = submit_publish(token, media_id)
+            return PublishResult(
+                action="publish",
+                media_id=media_id,
+                task_id=publish_id,
+                retried=retried,
+                error_code=mass_error.errcode if mass_error else None,
+                error_message=str(mass_error) if mass_error else "",
+            )
+        except WechatError as exc:
+            return PublishResult(
+                action="draft",
+                media_id=media_id,
+                retried=retried,
+                error_code=exc.errcode,
+                error_message=str(exc),
+            )
+
+    def _reconcile_mass_send(self, token: str, media_id: str, error: WechatError) -> PublishResult:
+        try:
+            draft = get_draft(token, media_id)
+        except WechatError as query_error:
+            return PublishResult(
+                action="mass_send_unknown",
+                media_id=media_id,
+                error_code=error.errcode,
+                error_message=f"群发结果不确定；查询草稿失败: {query_error}",
+            )
+        if draft is None:
+            return PublishResult(
+                action="mass_send_unknown",
+                media_id=media_id,
+                error_code=error.errcode,
+                error_message="群发很可能已群发，msg_id 未知；请前往微信公众号后台核对。",
+            )
+        return PublishResult(
+            action="mass_send_unknown",
+            media_id=media_id,
+            error_code=error.errcode,
+            error_message="群发结果不确定；草稿仍存在，请前往微信公众号后台核对。",
+        )
+
+    def _send_alerts(self, source_name: str, title: str, env: dict, result: PublishResult) -> None:
         wecom_webhook = env.get("WECOM_WEBHOOK")
         if wecom_webhook:
+            operation = self._alert_operation(result)
             msg = {
                 "msgtype": "markdown",
                 "markdown": {
-                    "content": f"🎉 **新文章草稿已生成并推送**\n\n> **来源**: {source_name}\n> **标题**: {title}\n> **操作**: 请前往微信公众号后台草稿箱预览并群发。"
+                    "content": f"🎉 **新文章草稿已生成并推送**\n\n> **来源**: {source_name}\n> **标题**: {title}\n> **操作**: {operation}"
                 }
             }
             req = urllib.request.Request(wecom_webhook, data=json.dumps(msg).encode('utf-8'), headers={'Content-Type': 'application/json'})
@@ -76,10 +223,33 @@ class WechatDraftPublisher:
             except Exception as e:
                 print(f"[{source_name}] WeCom alert failed: {e}", file=sys.stderr)
 
+    @staticmethod
+    def _alert_operation(result: PublishResult) -> str:
+        if result.action == "draft":
+            if result.error_message:
+                return f"自动发布失败，草稿已保留。错误: {result.error_message}"
+            return "请前往微信公众号后台草稿箱预览并群发。"
+        if result.action == "mass_send":
+            return f"已群发，msg_id: {result.task_id}。"
+        if result.action == "publish":
+            message = f"已自动发布（未群发），publish_id: {result.task_id}。"
+            if result.error_message:
+                message += f" 群发降级原因: {result.error_message}"
+            return message
+        return f"群发结果不确定，请手动核对后台。{result.error_message}"
+
 
 class PushPlusPublisher:
     """Pushes the full article Markdown text to personal WeChat via PushPlus."""
-    def publish(self, source_name: str, issue: str, article_path: Path, cover_path: Path, env: dict) -> None:
+    def publish(
+        self,
+        source_name: str,
+        issue: str,
+        article_path: Path,
+        cover_path: Path,
+        env: dict,
+        context: PublishContext | None = None,
+    ) -> None:
         token = env.get("PUSHPLUS_TOKEN")
         if not token:
             print(f"[{source_name}] PushPlusPublisher: PUSHPLUS_TOKEN missing in env.", file=sys.stderr)
@@ -112,7 +282,15 @@ class PushPlusPublisher:
 
 class EmailPublisher:
     """Sends the full article Markdown by SMTP email."""
-    def publish(self, source_name: str, issue: str, article_path: Path, cover_path: Path, env: dict) -> None:
+    def publish(
+        self,
+        source_name: str,
+        issue: str,
+        article_path: Path,
+        cover_path: Path,
+        env: dict,
+        context: PublishContext | None = None,
+    ) -> None:
         from_addr = env.get("EMAIL_FROM") or env.get("SMTP_FROM") or env.get("SMTP_USER")
         required = {
             "SMTP_HOST": env.get("SMTP_HOST"),
@@ -238,10 +416,18 @@ _PUBLISHERS: dict[str, Publisher] = {
 }
 
 
-def publish_article(destination: str, source_name: str, issue: str, article_path: Path, cover_path: Path, env: dict) -> None:
+def publish_article(
+    destination: str,
+    source_name: str,
+    issue: str,
+    article_path: Path,
+    cover_path: Path,
+    env: dict,
+    context: PublishContext | None = None,
+) -> PublishResult | None:
     """Entry point to route to the correct publisher based on destination identifier."""
     publisher = _PUBLISHERS.get(destination)
     if not publisher:
         print(f"[{source_name}] Unknown destination '{destination}', skipping.", file=sys.stderr)
         return
-    publisher.publish(source_name, issue, article_path, cover_path, env)
+    return publisher.publish(source_name, issue, article_path, cover_path, env, context)
