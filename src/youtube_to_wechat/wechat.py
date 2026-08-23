@@ -346,7 +346,7 @@ def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
             retryable=safe_retry,
             outcome_unknown=not safe_retry,
         ) from exc
-    except (socket.timeout, TimeoutError, http.client.RemoteDisconnected, ConnectionResetError) as exc:
+    except (socket.timeout, TimeoutError, http.client.HTTPException, ConnectionResetError) as exc:
         raise WechatError(
             f"WeChat connection outcome unknown for {_endpoint_path(url)}: {exc}",
             retryable=False,

@@ -1,5 +1,6 @@
-import json
+import http.client
 import io
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -8,6 +9,21 @@ from unittest.mock import MagicMock, patch
 
 import youtube_to_wechat.publish as publish_module
 from youtube_to_wechat.wechat import WechatError
+from youtube_to_wechat.wechat import submit_mass_send as real_submit_mass_send
+
+
+class _ReadFailureResponse:
+    def __init__(self, error):
+        self.error = error
+
+    def read(self):
+        raise self.error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
 
 class PublishTests(unittest.TestCase):
@@ -202,6 +218,46 @@ class PublishTests(unittest.TestCase):
         self.assertIn("很可能已群发", result.error_message)
         self.assertEqual(result.task_id, "")
         self.assertEqual(mass.mock.call_count, 1)
+        get_draft.assert_called_once_with("token", "draft-1")
+        publish.mock.assert_not_called()
+
+    def test_mass_send_incomplete_read_reconciles_once_without_retry_or_publish(self):
+        article_path, cover_path = self._article_files()
+        batch = publish_module.WechatBatchState(mass_send_enabled=True)
+        token, thumb, draft, _, publish = self._wechat_mocks()
+        response = _ReadFailureResponse(http.client.IncompleteRead(b'{"errcode":0', 5))
+
+        with (
+            token,
+            thumb,
+            draft,
+            publish,
+            patch(
+                "youtube_to_wechat.publish.submit_mass_send",
+                wraps=real_submit_mass_send,
+            ) as mass_send,
+            patch(
+                "youtube_to_wechat.wechat.urllib.request.urlopen",
+                return_value=response,
+            ),
+            patch(
+                "youtube_to_wechat.publish.get_draft",
+                return_value={"news_item": []},
+            ) as get_draft,
+        ):
+            result = publish_module.WechatDraftPublisher().publish(
+                "source",
+                "1",
+                article_path,
+                cover_path,
+                self._wechat_env(WECHAT_AUTO_PUBLISH="true"),
+                publish_module.PublishContext(batch),
+            )
+
+        self.assertEqual(result.action, "mass_send_unknown")
+        self.assertFalse(result.retried)
+        self.assertEqual(batch.mass_send_attempts, 1)
+        mass_send.assert_called_once_with("token", "draft-1")
         get_draft.assert_called_once_with("token", "draft-1")
         publish.mock.assert_not_called()
 

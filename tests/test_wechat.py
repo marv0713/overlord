@@ -34,6 +34,14 @@ class _Response:
         return False
 
 
+class _ReadFailureResponse(_Response):
+    def __init__(self, error: BaseException):
+        self.error = error
+
+    def read(self):
+        raise self.error
+
+
 class WechatTests(unittest.TestCase):
     def test_wechat_error_exposes_structured_fields_and_message(self):
         error = WechatError("request failed", errcode=123, retryable=True, outcome_unknown=True)
@@ -298,6 +306,31 @@ class WechatTests(unittest.TestCase):
 
         self.assertFalse(raised.exception.retryable)
         self.assertTrue(raised.exception.outcome_unknown)
+
+    def test_post_json_maps_incomplete_read_to_redacted_unknown_error_with_cause(self):
+        url = "https://api.weixin.qq.com/cgi-bin/message/mass/sendall?access_token=secret-token"
+        failure = http.client.IncompleteRead(b'{"errcode":0', 5)
+        response = _ReadFailureResponse(failure)
+
+        with patch("youtube_to_wechat.wechat.urllib.request.urlopen", return_value=response):
+            with self.assertRaises(WechatError) as raised:
+                _post_json(url, {"x": 1})
+
+        self.assertFalse(raised.exception.retryable)
+        self.assertTrue(raised.exception.outcome_unknown)
+        self.assertNotIn("secret-token", str(raised.exception))
+        self.assertIn("/cgi-bin/message/mass/sendall", str(raised.exception))
+        self.assertIs(raised.exception.__cause__, failure)
+
+    def test_post_json_does_not_swallow_unrelated_read_errors(self):
+        failure = RuntimeError("programmer error")
+        response = _ReadFailureResponse(failure)
+
+        with patch("youtube_to_wechat.wechat.urllib.request.urlopen", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "programmer error") as raised:
+                _post_json("https://example.com/post", {"x": 1})
+
+        self.assertIs(raised.exception, failure)
 
     def test_post_json_maps_invalid_json_to_unknown_non_retryable_error(self):
         response = _Response(b"not json")
