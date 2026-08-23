@@ -195,10 +195,7 @@ def submit_mass_send(access_token: str, media_id: str) -> str:
         },
     )
     _raise_api_error(data, "mass send")
-    msg_id = data.get("msg_id")
-    if msg_id is None:
-        raise WechatError(f"WeChat mass send error: missing msg_id in {data}")
-    return str(msg_id)
+    return _require_mutation_id(data, "msg_id", "mass send")
 
 
 def submit_publish(access_token: str, media_id: str) -> str:
@@ -207,10 +204,7 @@ def submit_publish(access_token: str, media_id: str) -> str:
         {"media_id": media_id},
     )
     _raise_api_error(data, "publish")
-    publish_id = data.get("publish_id")
-    if publish_id is None:
-        raise WechatError(f"WeChat publish error: missing publish_id in {data}")
-    return str(publish_id)
+    return _require_mutation_id(data, "publish_id", "publish")
 
 
 def get_draft(access_token: str, media_id: str) -> dict[str, Any] | None:
@@ -263,7 +257,7 @@ def build_draft_article(
 
 
 def _get_json(url: str) -> dict[str, Any]:
-    with urllib.request.urlopen(url, timeout=30, context=ssl._create_unverified_context()) as response:
+    with urllib.request.urlopen(url, timeout=30, context=ssl.create_default_context()) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -288,8 +282,25 @@ def _normalize_api_errcode(data: dict[str, Any], action: str) -> int:
         raise WechatError(
             f"WeChat {action} error: invalid errcode in {data}",
             retryable=False,
-            outcome_unknown=False,
+            outcome_unknown=True,
         ) from exc
+
+
+def _endpoint_path(url: str) -> str:
+    return urllib.parse.urlsplit(url).path or "/"
+
+
+def _require_mutation_id(data: dict[str, Any], key: str, action: str) -> str:
+    value = data.get(key)
+    valid_string = isinstance(value, str) and bool(value.strip())
+    valid_integer = isinstance(value, int) and not isinstance(value, bool)
+    if not (valid_string or valid_integer):
+        raise WechatError(
+            f"WeChat {action} error: invalid {key} in response",
+            retryable=False,
+            outcome_unknown=True,
+        )
+    return str(value)
 
 
 def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -301,31 +312,39 @@ def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=60, context=ssl._create_unverified_context()) as response:
+        with urllib.request.urlopen(request, timeout=60, context=ssl.create_default_context()) as response:
             try:
-                return json.loads(response.read().decode("utf-8"))
-            except json.JSONDecodeError as exc:
+                decoded = response.read().decode("utf-8")
+                parsed = json.loads(decoded)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise WechatError(
-                    f"WeChat {url} returned invalid JSON: {exc}",
+                    f"WeChat {_endpoint_path(url)} returned invalid JSON: {exc}",
                     retryable=False,
                     outcome_unknown=True,
                 ) from exc
+            if not isinstance(parsed, dict):
+                raise WechatError(
+                    f"WeChat {_endpoint_path(url)} returned a non-object JSON response",
+                    retryable=False,
+                    outcome_unknown=True,
+                )
+            return parsed
     except urllib.error.HTTPError as exc:
         raise WechatError(
-            f"WeChat HTTP error {exc.code} for {url}: {exc.reason}",
+            f"WeChat HTTP error {exc.code} for {_endpoint_path(url)}: {exc.reason}",
             retryable=False,
             outcome_unknown=exc.code >= 500,
         ) from exc
     except urllib.error.URLError as exc:
         safe_retry = isinstance(exc.reason, (socket.gaierror, ConnectionRefusedError))
         raise WechatError(
-            f"WeChat connection error for {url}: {exc.reason}",
+            f"WeChat connection error for {_endpoint_path(url)}: {exc.reason}",
             retryable=safe_retry,
             outcome_unknown=not safe_retry,
         ) from exc
     except (socket.timeout, TimeoutError, http.client.RemoteDisconnected, ConnectionResetError) as exc:
         raise WechatError(
-            f"WeChat connection outcome unknown for {url}: {exc}",
+            f"WeChat connection outcome unknown for {_endpoint_path(url)}: {exc}",
             retryable=False,
             outcome_unknown=True,
         ) from exc
@@ -350,5 +369,5 @@ def _multipart_upload(url: str, field_name: str, file_path: Path) -> dict[str, A
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=60, context=ssl._create_unverified_context()) as response:
+    with urllib.request.urlopen(request, timeout=60, context=ssl.create_default_context()) as response:
         return json.loads(response.read().decode("utf-8"))

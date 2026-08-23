@@ -1,14 +1,19 @@
 import http.client
 import io
+import ssl
 import socket
+import tempfile
 import unittest
 import urllib.error
+from pathlib import Path
 from unittest.mock import patch
 
 from youtube_to_wechat import wechat
 from youtube_to_wechat.wechat import (
     WechatError,
+    _get_json,
     _markdown_to_html,
+    _multipart_upload,
     _post_json,
     build_draft_article,
     parse_env_text,
@@ -66,7 +71,7 @@ class WechatTests(unittest.TestCase):
 
         self.assertIsNone(raised.exception.errcode)
         self.assertFalse(raised.exception.retryable)
-        self.assertFalse(raised.exception.outcome_unknown)
+        self.assertTrue(raised.exception.outcome_unknown)
 
     @patch("youtube_to_wechat.wechat._post_json", return_value={"msg_id": 987})
     def test_submit_mass_send_posts_exact_payload_and_returns_string_msg_id(self, post):
@@ -100,7 +105,7 @@ class WechatTests(unittest.TestCase):
 
         self.assertIsNone(raised.exception.errcode)
         self.assertFalse(raised.exception.retryable)
-        self.assertFalse(raised.exception.outcome_unknown)
+        self.assertTrue(raised.exception.outcome_unknown)
 
     @patch("youtube_to_wechat.wechat._post_json", return_value={})
     def test_submit_publish_missing_publish_id_raises_structured_error(self, post):
@@ -109,7 +114,7 @@ class WechatTests(unittest.TestCase):
 
         self.assertIsNone(raised.exception.errcode)
         self.assertFalse(raised.exception.retryable)
-        self.assertFalse(raised.exception.outcome_unknown)
+        self.assertTrue(raised.exception.outcome_unknown)
 
     @patch("youtube_to_wechat.wechat._post_json", return_value={"msg_id": 0})
     def test_submit_mass_send_returns_zero_identifier_as_string(self, post):
@@ -121,13 +126,57 @@ class WechatTests(unittest.TestCase):
 
     @patch("youtube_to_wechat.wechat._post_json", return_value={"msg_id": None})
     def test_submit_mass_send_none_identifier_is_missing(self, post):
-        with self.assertRaises(WechatError):
+        with self.assertRaises(WechatError) as raised:
             wechat.submit_mass_send("token", "draft-1")
+
+        self.assertFalse(raised.exception.retryable)
+        self.assertTrue(raised.exception.outcome_unknown)
 
     @patch("youtube_to_wechat.wechat._post_json", return_value={"publish_id": None})
     def test_submit_publish_none_identifier_is_missing(self, post):
-        with self.assertRaises(WechatError):
+        with self.assertRaises(WechatError) as raised:
             wechat.submit_publish("token", "draft-1")
+
+        self.assertFalse(raised.exception.retryable)
+        self.assertTrue(raised.exception.outcome_unknown)
+
+    @patch("youtube_to_wechat.wechat._post_json")
+    def test_submit_mass_send_rejects_invalid_identifiers_as_unknown(self, post):
+        for identifier in ("", "   ", [], {}):
+            with self.subTest(identifier=identifier):
+                post.return_value = {"msg_id": identifier}
+                with self.assertRaises(WechatError) as raised:
+                    wechat.submit_mass_send("token", "draft-1")
+
+                self.assertFalse(raised.exception.retryable)
+                self.assertTrue(raised.exception.outcome_unknown)
+
+    @patch("youtube_to_wechat.wechat._post_json")
+    def test_submit_publish_rejects_invalid_identifiers_as_unknown(self, post):
+        for identifier in ("", "   ", [], {}):
+            with self.subTest(identifier=identifier):
+                post.return_value = {"publish_id": identifier}
+                with self.assertRaises(WechatError) as raised:
+                    wechat.submit_publish("token", "draft-1")
+
+                self.assertFalse(raised.exception.retryable)
+                self.assertTrue(raised.exception.outcome_unknown)
+
+    @patch("youtube_to_wechat.wechat._post_json", return_value={"msg_id": False})
+    def test_submit_mass_send_rejects_boolean_identifier(self, post):
+        with self.assertRaises(WechatError) as raised:
+            wechat.submit_mass_send("token", "draft-1")
+
+        self.assertFalse(raised.exception.retryable)
+        self.assertTrue(raised.exception.outcome_unknown)
+
+    @patch("youtube_to_wechat.wechat._post_json", return_value={"publish_id": True})
+    def test_submit_publish_rejects_boolean_identifier(self, post):
+        with self.assertRaises(WechatError) as raised:
+            wechat.submit_publish("token", "draft-1")
+
+        self.assertFalse(raised.exception.retryable)
+        self.assertTrue(raised.exception.outcome_unknown)
 
     @patch("youtube_to_wechat.wechat._post_json", return_value={"errcode": 40007, "errmsg": "Invalid MEDIA_ID"})
     def test_get_draft_maps_invalid_media_id_to_none(self, post):
@@ -242,6 +291,72 @@ class WechatTests(unittest.TestCase):
 
         self.assertFalse(raised.exception.retryable)
         self.assertTrue(raised.exception.outcome_unknown)
+
+    def test_post_json_maps_invalid_utf8_to_unknown_non_retryable_error(self):
+        response = _Response(b"\xff")
+        with patch("youtube_to_wechat.wechat.urllib.request.urlopen", return_value=response):
+            with self.assertRaises(WechatError) as raised:
+                _post_json("https://example.com", {"x": 1})
+
+        self.assertFalse(raised.exception.retryable)
+        self.assertTrue(raised.exception.outcome_unknown)
+
+    def test_post_json_rejects_non_object_json_as_unknown(self):
+        for body in (b"[]", b"null"):
+            with self.subTest(body=body):
+                response = _Response(body)
+                with patch("youtube_to_wechat.wechat.urllib.request.urlopen", return_value=response):
+                    with self.assertRaises(WechatError) as raised:
+                        _post_json("https://example.com", {"x": 1})
+
+                self.assertFalse(raised.exception.retryable)
+                self.assertTrue(raised.exception.outcome_unknown)
+
+    def test_post_json_errors_redact_access_token_from_messages(self):
+        url = "https://api.weixin.qq.com/cgi-bin/message/mass/sendall?access_token=secret-token"
+        cases = (
+            ("invalid json", _Response(b"not json")),
+            ("invalid utf8", _Response(b"\xff")),
+            ("non-object", _Response(b"[]")),
+            ("http", urllib.error.HTTPError(url, 500, "server error", {}, io.BytesIO(b"{}"))),
+            ("url", urllib.error.URLError(OSError("connection failed"))),
+            ("timeout", TimeoutError("timed out")),
+        )
+        for name, failure in cases:
+            with self.subTest(name=name):
+                patch_kwargs = (
+                    {"side_effect": failure}
+                    if isinstance(failure, BaseException)
+                    else {"return_value": failure}
+                )
+                with patch("youtube_to_wechat.wechat.urllib.request.urlopen", **patch_kwargs):
+                    with self.assertRaises(WechatError) as raised:
+                        _post_json(url, {"x": 1})
+
+                self.assertNotIn("secret-token", str(raised.exception))
+                self.assertIn("/cgi-bin/message/mass/sendall", str(raised.exception))
+
+    @patch("youtube_to_wechat.wechat.ssl._create_unverified_context", side_effect=AssertionError("insecure TLS"))
+    @patch("youtube_to_wechat.wechat.ssl.create_default_context")
+    @patch("youtube_to_wechat.wechat.urllib.request.urlopen")
+    def test_http_helpers_use_verified_tls_context(self, urlopen, create_context, unverified):
+        verified_context = object()
+        create_context.return_value = verified_context
+        urlopen.return_value = _Response(b"{}")
+
+        _get_json("https://example.com/get")
+        _post_json("https://example.com/post", {"x": 1})
+        with tempfile.NamedTemporaryFile() as image:
+            image.write(b"image")
+            image.flush()
+            _multipart_upload("https://example.com/upload", "media", Path(image.name))
+
+        self.assertEqual(create_context.call_count, 3)
+        self.assertEqual(
+            [call.kwargs["context"] for call in urlopen.call_args_list],
+            [verified_context, verified_context, verified_context],
+        )
+        unverified.assert_not_called()
 
     def test_parse_env_text_ignores_comments_and_blank_lines(self):
         env = parse_env_text("""
