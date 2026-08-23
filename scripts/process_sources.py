@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -254,9 +255,13 @@ def _record_publish_result(run_json_path: Path, result: PublishResult | None) ->
         return
 
     run["wechat_publish"] = result.to_dict()
-    serialized_result = json.dumps(result.to_dict(), ensure_ascii=False)
+    try:
+        serialized_result = json.dumps(result.to_dict(), ensure_ascii=True)
+    except (TypeError, UnicodeError, ValueError):
+        serialized_result = ascii(result.to_dict())
     temporary_path: Path | None = None
     try:
+        original_mode = stat.S_IMODE(run_json_path.stat().st_mode)
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
@@ -266,17 +271,21 @@ def _record_publish_result(run_json_path: Path, result: PublishResult | None) ->
             delete=False,
         ) as temporary_file:
             temporary_path = Path(temporary_file.name)
+            os.fchmod(temporary_file.fileno(), original_mode)
             json.dump(run, temporary_file, ensure_ascii=False, indent=2)
             temporary_file.write("\n")
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
         os.replace(temporary_path, run_json_path)
-    except OSError as exc:
-        print(
-            f"Failed to persist WeChat publish outcome {serialized_result}; "
-            f"keeping existing run record: {exc}",
-            file=sys.stderr,
-        )
+    except (OSError, TypeError, UnicodeError, ValueError) as exc:
+        try:
+            sys.stderr.write(
+                f"Failed to persist WeChat publish outcome {serialized_result}; "
+                f"keeping existing run record: {exc!a}\n"
+            )
+        except (OSError, UnicodeError):
+            pass
+    finally:
         if temporary_path is not None:
             try:
                 temporary_path.unlink(missing_ok=True)

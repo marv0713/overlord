@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -93,6 +94,30 @@ class ProcessSourcesTests(unittest.TestCase):
             self.assertEqual(list(run_json_path.parent.glob(".run.json.*.tmp")), [])
             self.assertIn('"action": "publish"', stderr.getvalue())
             self.assertIn("keeping existing run record", stderr.getvalue())
+
+    def test_record_publish_result_handles_surrogate_error_message_without_changing_run_json(self):
+        result = PublishResult(action="draft", error_message=chr(0xD800))
+        original = b'{"status":"ok", "issue":"No.001"}\n'
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_json_path = Path(temp_dir) / "run.json"
+            run_json_path.write_bytes(original)
+            with patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                _record_publish_result(run_json_path, result)
+
+            self.assertEqual(run_json_path.read_bytes(), original)
+            self.assertEqual(list(run_json_path.parent.glob(".run.json.*.tmp")), [])
+            self.assertTrue(stderr.getvalue())
+
+    def test_record_publish_result_preserves_original_permission_mode(self):
+        result = PublishResult(action="draft", media_id="media-123")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_json_path = Path(temp_dir) / "run.json"
+            run_json_path.write_text('{"status": "ok"}\n', encoding="utf-8")
+            run_json_path.chmod(0o640)
+
+            _record_publish_result(run_json_path, result)
+
+            self.assertEqual(stat.S_IMODE(run_json_path.stat().st_mode), 0o640)
 
     def test_record_publish_result_noops_for_none_missing_or_invalid_run_json(self):
         result = PublishResult(action="draft", media_id="media-123")
@@ -209,32 +234,37 @@ class ProcessSourcesTests(unittest.TestCase):
                 return 1
 
             env = {"WECHAT_MASS_SEND": "true"}
-            with (
-                patch("youtube_to_wechat.wechat.load_env", return_value=env),
-                patch("scripts.process_sources.load_source_config", return_value=SimpleNamespace(sources=[])),
-                patch("scripts.process_sources.create_store", return_value=object()),
-                patch(
-                    "scripts.process_sources.collect_source_candidates",
-                    return_value=[first_candidate, second_candidate],
-                ),
-                patch("scripts.process_sources.process_candidate", side_effect=create_output),
-                patch("scripts.process_sources.publish_article", side_effect=results) as publish_article,
-                patch("scripts.process_sources._build_publish_context", wraps=_build_publish_context) as build_context,
-                patch(
-                    "sys.argv",
-                    [
-                        "process_sources.py",
-                        "--push",
-                        "--max-items",
-                        "2",
-                        "--output-dir",
-                        str(temp_path),
-                        "--cover",
-                        str(cover_path),
-                    ],
-                ),
-            ):
-                self.assertEqual(main(), 0)
+            original_mass_send = os.environ.get("WECHAT_MASS_SEND")
+            with patch.dict(os.environ, {"WECHAT_MASS_SEND": "before-main"}, clear=False):
+                with (
+                    patch("youtube_to_wechat.wechat.load_env", return_value=env),
+                    patch("scripts.process_sources.load_source_config", return_value=SimpleNamespace(sources=[])),
+                    patch("scripts.process_sources.create_store", return_value=object()),
+                    patch(
+                        "scripts.process_sources.collect_source_candidates",
+                        return_value=[first_candidate, second_candidate],
+                    ),
+                    patch("scripts.process_sources.process_candidate", side_effect=create_output),
+                    patch("scripts.process_sources.publish_article", side_effect=results) as publish_article,
+                    patch("scripts.process_sources._build_publish_context", wraps=_build_publish_context) as build_context,
+                    patch(
+                        "sys.argv",
+                        [
+                            "process_sources.py",
+                            "--push",
+                            "--max-items",
+                            "2",
+                            "--output-dir",
+                            str(temp_path),
+                            "--cover",
+                            str(cover_path),
+                        ],
+                    ),
+                ):
+                    self.assertEqual(main(), 0)
+                self.assertEqual(os.environ["WECHAT_MASS_SEND"], "true")
+
+            self.assertEqual(os.environ.get("WECHAT_MASS_SEND"), original_mass_send)
 
             self.assertEqual(build_context.call_count, 1)
             self.assertEqual(publish_article.call_count, 2)
