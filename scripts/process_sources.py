@@ -9,6 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from youtube_to_wechat.output import write_article, write_outputs
+from youtube_to_wechat.publish import (
+    PublishContext,
+    PublishResult,
+    WechatBatchState,
+    _env_bool,
+    publish_article,
+)
 from youtube_to_wechat.processed_store import BaseProcessedStore, create_store, slugify_source_name
 from youtube_to_wechat.source_config import SourceConfig, load_source_config
 from youtube_to_wechat.transcriber import FasterWhisperTranscriber, TranscriberError
@@ -232,6 +239,57 @@ def _should_push_output(output_dir: Path) -> bool:
     except (OSError, json.JSONDecodeError):
         return False
     return run.get("article_status") == "ok"
+
+
+def _record_publish_result(run_json_path: Path, result: PublishResult | None) -> None:
+    """Persist a WeChat publishing outcome alongside the existing run data."""
+    if result is None or not run_json_path.exists():
+        return
+    try:
+        run = json.loads(run_json_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(run, dict):
+        return
+
+    run["wechat_publish"] = result.to_dict()
+    run_json_path.write_text(
+        json.dumps(run, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _build_publish_context(env: dict[str, str]) -> PublishContext:
+    return PublishContext(
+        wechat_batch=WechatBatchState(
+            mass_send_enabled=_env_bool(env.get("WECHAT_MASS_SEND"), default=True)
+        )
+    )
+
+
+def _dispatch_article(
+    *,
+    destinations: list[str],
+    source_name: str,
+    issue: str,
+    article_path: Path,
+    cover_path: Path,
+    env: dict[str, str],
+    context: PublishContext,
+    run_json_path: Path,
+) -> None:
+    for destination in destinations:
+        print(f"[{source_name}] Dispatching to destination: {destination}...")
+        result = publish_article(
+            destination=destination,
+            source_name=source_name,
+            issue=issue,
+            article_path=article_path,
+            cover_path=cover_path,
+            env=env,
+            context=context,
+        )
+        _record_publish_result(run_json_path, result)
 
 
 def _resolve_writer_profile(configured_profile: str, title: str) -> str:
@@ -612,6 +670,7 @@ def main() -> int:
     env_vars = load_env(Path(args.env))
     if env_vars:
         os.environ.update(env_vars)
+    shared_publish_context = _build_publish_context(env_vars)
 
     try:
         config = load_source_config(Path(args.config))
@@ -710,22 +769,21 @@ def main() -> int:
                 
                 # Dispatch to all configured destinations
                 import json as _json
-                from youtube_to_wechat.publish import publish_article
                 
                 env = load_env(Path(args.env))
                 _run_data = _json.loads(run_json_path.read_text(encoding="utf-8")) if run_json_path.exists() else {}
                 issue_val = _run_data.get("issue", "")
                 
-                for destination in candidate.source.destinations:
-                    print(f"[{candidate.source.name}] Dispatching to destination: {destination}...")
-                    publish_article(
-                        destination=destination,
-                        source_name=candidate.source.name,
-                        issue=issue_val,
-                        article_path=output_dir / "article.md",
-                        cover_path=cover_path,
-                        env=env,
-                    )
+                _dispatch_article(
+                    destinations=candidate.source.destinations,
+                    source_name=candidate.source.name,
+                    issue=issue_val,
+                    article_path=output_dir / "article.md",
+                    cover_path=cover_path,
+                    env=env,
+                    context=shared_publish_context,
+                    run_json_path=run_json_path,
+                )
 
     except (OSError, ValueError, YtDlpError) as exc:
         print(f"error: {exc}", file=sys.stderr)

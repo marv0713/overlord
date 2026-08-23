@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,6 +7,9 @@ from unittest.mock import patch
 from scripts.process_sources import (
     SourceCandidate,
     _build_cover_text,
+    _build_publish_context,
+    _dispatch_article,
+    _record_publish_result,
     _resolve_writer_profile,
     _should_push_output,
     collect_source_candidates,
@@ -14,6 +18,7 @@ from scripts.process_sources import (
     process_source,
     process_video_url,
 )
+from youtube_to_wechat.publish import PublishResult
 from youtube_to_wechat.processed_store import ProcessedStore
 from youtube_to_wechat.source_config import SourceConfig
 from youtube_to_wechat.xiaoyuzhou import PodcastEpisode
@@ -21,6 +26,102 @@ from youtube_to_wechat.youtube_channel import ChannelVideo
 
 
 class ProcessSourcesTests(unittest.TestCase):
+    def test_record_publish_result_preserves_run_fields_and_persists_exact_result(self):
+        result = PublishResult(
+            action="mass_send",
+            media_id="media-123",
+            task_id="task-456",
+            retried=True,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_json_path = Path(temp_dir) / "run.json"
+            run_json_path.write_text(
+                '{\n  "status": "ok",\n  "issue": "No.001"\n}\n',
+                encoding="utf-8",
+            )
+
+            _record_publish_result(run_json_path, result)
+
+            self.assertEqual(
+                json.loads(run_json_path.read_text(encoding="utf-8")),
+                {
+                    "status": "ok",
+                    "issue": "No.001",
+                    "wechat_publish": result.to_dict(),
+                },
+            )
+            self.assertTrue(run_json_path.read_text(encoding="utf-8").endswith("\n"))
+
+    def test_record_publish_result_noops_for_none_missing_or_invalid_run_json(self):
+        result = PublishResult(action="draft", media_id="media-123")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            missing_path = temp_path / "missing.json"
+            _record_publish_result(missing_path, result)
+            self.assertFalse(missing_path.exists())
+
+            invalid_path = temp_path / "invalid.json"
+            invalid_path.write_text("not json", encoding="utf-8")
+            _record_publish_result(invalid_path, result)
+            self.assertEqual(invalid_path.read_text(encoding="utf-8"), "not json")
+
+            valid_path = temp_path / "valid.json"
+            valid_path.write_text('{"status": "ok"}\n', encoding="utf-8")
+            _record_publish_result(valid_path, None)
+            self.assertEqual(valid_path.read_text(encoding="utf-8"), '{"status": "ok"}\n')
+
+    def test_record_publish_result_none_does_not_overwrite_existing_wechat_outcome(self):
+        existing = {"action": "mass_send", "media_id": "already-sent"}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_json_path = Path(temp_dir) / "run.json"
+            run_json_path.write_text(
+                json.dumps({"status": "ok", "wechat_publish": existing}) + "\n",
+                encoding="utf-8",
+            )
+
+            _record_publish_result(run_json_path, None)
+
+            self.assertEqual(json.loads(run_json_path.read_text(encoding="utf-8"))["wechat_publish"], existing)
+
+    def test_build_publish_context_defaults_to_mass_send_enabled_and_honors_false(self):
+        self.assertTrue(_build_publish_context({}).wechat_batch.mass_send_enabled)
+        self.assertFalse(_build_publish_context({"WECHAT_MASS_SEND": "false"}).wechat_batch.mass_send_enabled)
+
+    @patch("scripts.process_sources.publish_article")
+    def test_dispatch_article_reuses_the_supplied_context_across_candidates(self, publish_article):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            first_run = temp_path / "first.json"
+            second_run = temp_path / "second.json"
+            first_run.write_text('{"status": "ok"}\n', encoding="utf-8")
+            second_run.write_text('{"status": "ok"}\n', encoding="utf-8")
+            context = _build_publish_context({})
+            publish_article.return_value = None
+
+            _dispatch_article(
+                destinations=["email"],
+                source_name="First",
+                issue="No.001",
+                article_path=temp_path / "first.md",
+                cover_path=temp_path / "first.png",
+                env={},
+                context=context,
+                run_json_path=first_run,
+            )
+            _dispatch_article(
+                destinations=["pushplus"],
+                source_name="Second",
+                issue="No.002",
+                article_path=temp_path / "second.md",
+                cover_path=temp_path / "second.png",
+                env={},
+                context=context,
+                run_json_path=second_run,
+            )
+
+        self.assertEqual(publish_article.call_count, 2)
+        self.assertIs(publish_article.call_args_list[0].kwargs["context"], context)
+        self.assertIs(publish_article.call_args_list[1].kwargs["context"], context)
     def test_auto_profile_routes_explicit_company_list_to_interview(self):
         self.assertEqual(
             _resolve_writer_profile(
