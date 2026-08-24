@@ -22,7 +22,7 @@ No.012 | Sven Carlin 价值投资象限：拆解高风险与被低估的“公�
 
             title = _extract_title(text, article_path)
 
-        self.assertEqual(title, "No.012 | Sven 价值投资象限")
+        self.assertEqual(title, "No.012 | Sven Carlin 价值投资象限")
 
     def test_read_article_removes_leading_title_block_from_content(self):
         text = """# No.012 | AMZN、HPQ、CHTR、FISV... Sven Carlin 博士拆解：高风险、高回报与“公平公司”的价值博弈
@@ -42,7 +42,7 @@ No.012 | Sven Carlin 价值投资象限：拆解高风险与被低估的“公�
 
             title, digest, content = _read_article(article_path)
 
-        self.assertEqual(title, "No.012 | Sven 价值投资象限")
+        self.assertEqual(title, "No.012 | Sven Carlin 价值投资象限")
         self.assertNotIn("AMZN、HPQ、CHTR", digest)
         self.assertIn("管理层正在疯狂抛售", digest)
         self.assertNotIn("<h1", content)

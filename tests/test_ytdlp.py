@@ -21,10 +21,22 @@ class YtDlpCommandTests(unittest.TestCase):
         self.assertEqual(command[-2:], ["-m", "yt_dlp"])
 
     def test_adds_no_check_certificates_when_requested(self):
-        self.assertEqual(ytdlp_options(no_check_certificates=True), ["--no-check-certificates"])
+        self.assertEqual(
+            ytdlp_options(no_check_certificates=True),
+            [
+                "--js-runtimes",
+                "node",
+                "--remote-components",
+                "ejs:github",
+                "--no-check-certificates",
+            ],
+        )
 
     def test_omits_no_check_certificates_by_default(self):
-        self.assertEqual(ytdlp_options(no_check_certificates=False), [])
+        self.assertEqual(
+            ytdlp_options(no_check_certificates=False),
+            ["--js-runtimes", "node", "--remote-components", "ejs:github"],
+        )
 
     def test_default_subtitle_languages_prioritize_english_original(self):
         self.assertEqual(DEFAULT_SUBTITLE_LANGUAGES[:2], ["en-orig", "en"])
