@@ -86,15 +86,37 @@ class PublishTests(unittest.TestCase):
 
     def test_auto_publish_defaults_to_a_single_mass_send(self):
         article_path, cover_path = self._article_files()
+        batch = publish_module.WechatBatchState(mass_send_enabled=True)
         token, thumb, draft, mass, publish = self._wechat_mocks()
         with token, thumb, draft, mass, publish:
             result = publish_module.WechatDraftPublisher().publish(
-                "source", "1", article_path, cover_path, self._wechat_env(WECHAT_AUTO_PUBLISH="true")
+                "source", "1", article_path, cover_path,
+                self._wechat_env(WECHAT_AUTO_PUBLISH="true"),
+                publish_module.PublishContext(batch),
             )
         self.assertEqual(result.action, "mass_send")
         self.assertEqual(result.task_id, "msg-1")
         self.assertEqual(mass.mock.call_count, 1)
         publish.mock.assert_not_called()
+
+    def test_auto_publish_without_shared_batch_context_never_mass_sends(self):
+        for context in (None, publish_module.PublishContext()):
+            with self.subTest(context=context):
+                article_path, cover_path = self._article_files()
+                token, thumb, draft, mass, publish = self._wechat_mocks()
+                with token, thumb, draft, mass, publish:
+                    result = publish_module.WechatDraftPublisher().publish(
+                        "source",
+                        "1",
+                        article_path,
+                        cover_path,
+                        self._wechat_env(WECHAT_AUTO_PUBLISH="true"),
+                        context,
+                    )
+
+                self.assertEqual(result.action, "publish")
+                mass.mock.assert_not_called()
+                publish.mock.assert_called_once_with("token", "draft-1")
 
     def test_auto_publish_with_mass_disabled_publishes_without_mass_attempt(self):
         article_path, cover_path = self._article_files()
@@ -197,7 +219,9 @@ class PublishTests(unittest.TestCase):
         mass.mock.side_effect = error
         with token, thumb, draft, mass, publish:
             result = publish_module.WechatDraftPublisher().publish(
-                "source", "1", article_path, cover_path, self._wechat_env(WECHAT_AUTO_PUBLISH="true")
+                "source", "1", article_path, cover_path,
+                self._wechat_env(WECHAT_AUTO_PUBLISH="true"),
+                publish_module.PublishContext(publish_module.WechatBatchState(True)),
             )
         self.assertEqual(result.action, "publish")
         self.assertEqual(result.error_code, -1)
@@ -212,7 +236,9 @@ class PublishTests(unittest.TestCase):
         mass.mock.side_effect = ambiguous
         with token, thumb, draft, mass, publish, patch("youtube_to_wechat.publish.get_draft", return_value=None) as get_draft:
             result = publish_module.WechatDraftPublisher().publish(
-                "source", "1", article_path, cover_path, self._wechat_env(WECHAT_AUTO_PUBLISH="true")
+                "source", "1", article_path, cover_path,
+                self._wechat_env(WECHAT_AUTO_PUBLISH="true"),
+                publish_module.PublishContext(publish_module.WechatBatchState(True)),
             )
         self.assertEqual(result.action, "mass_send_unknown")
         self.assertIn("很可能已群发", result.error_message)
@@ -266,7 +292,11 @@ class PublishTests(unittest.TestCase):
         token, thumb, draft, mass, publish = self._wechat_mocks()
         mass.mock.side_effect = WechatError("bad gateway", outcome_unknown=True)
         with token, thumb, draft, mass, publish, patch("youtube_to_wechat.publish.get_draft", return_value={"news_item": []}):
-            result = publish_module.WechatDraftPublisher().publish("source", "1", article_path, cover_path, self._wechat_env(WECHAT_AUTO_PUBLISH="true"))
+            result = publish_module.WechatDraftPublisher().publish(
+                "source", "1", article_path, cover_path,
+                self._wechat_env(WECHAT_AUTO_PUBLISH="true"),
+                publish_module.PublishContext(publish_module.WechatBatchState(True)),
+            )
         self.assertEqual(result.action, "mass_send_unknown")
         self.assertIn("结果不确定", result.error_message)
         self.assertIn("bad gateway", result.error_message)
@@ -278,7 +308,11 @@ class PublishTests(unittest.TestCase):
         token, thumb, draft, mass, publish = self._wechat_mocks()
         mass.mock.side_effect = WechatError("bad gateway", outcome_unknown=True)
         with token, thumb, draft, mass, publish, patch("youtube_to_wechat.publish.get_draft", side_effect=WechatError("query failed")):
-            result = publish_module.WechatDraftPublisher().publish("source", "1", article_path, cover_path, self._wechat_env(WECHAT_AUTO_PUBLISH="true"))
+            result = publish_module.WechatDraftPublisher().publish(
+                "source", "1", article_path, cover_path,
+                self._wechat_env(WECHAT_AUTO_PUBLISH="true"),
+                publish_module.PublishContext(publish_module.WechatBatchState(True)),
+            )
         self.assertEqual(result.action, "mass_send_unknown")
         self.assertIn("结果不确定", result.error_message)
         self.assertIn("query failed", result.error_message)
@@ -324,7 +358,9 @@ class PublishTests(unittest.TestCase):
         publish.mock.side_effect = WechatError("publish timeout", outcome_unknown=True)
         with token, thumb, draft, mass, publish:
             result = publish_module.WechatDraftPublisher().publish(
-                "source", "1", article_path, cover_path, self._wechat_env(WECHAT_AUTO_PUBLISH="true")
+                "source", "1", article_path, cover_path,
+                self._wechat_env(WECHAT_AUTO_PUBLISH="true"),
+                publish_module.PublishContext(publish_module.WechatBatchState(True)),
             )
         self.assertEqual(result.action, "publish_unknown")
         self.assertIsNone(result.error_code)

@@ -385,6 +385,48 @@ class WechatTests(unittest.TestCase):
                 self.assertNotIn("secret-token", str(raised.exception))
                 self.assertIn("/cgi-bin/message/mass/sendall", str(raised.exception))
 
+    def test_pre_draft_helpers_map_url_errors_to_structured_errors(self):
+        url = "https://api.weixin.qq.com/cgi-bin/token?access_token=secret-token"
+        failure = urllib.error.URLError(socket.gaierror("dns failure"))
+
+        with patch("youtube_to_wechat.wechat.urllib.request.urlopen", side_effect=failure):
+            try:
+                _get_json(url)
+            except Exception as exc:
+                get_error = exc
+            else:
+                self.fail("_get_json did not raise")
+
+        self.assertIsInstance(get_error, WechatError)
+        self.assertTrue(get_error.retryable)
+        self.assertFalse(get_error.outcome_unknown)
+        self.assertNotIn("secret-token", str(get_error))
+        self.assertIn("/cgi-bin/token", str(get_error))
+        self.assertIs(get_error.__cause__, failure)
+
+        upload_url = "https://api.weixin.qq.com/cgi-bin/material/add_material?access_token=secret-token"
+        upload_failure = urllib.error.URLError(ConnectionRefusedError("refused"))
+        with tempfile.NamedTemporaryFile() as image:
+            image.write(b"image")
+            image.flush()
+            with patch(
+                "youtube_to_wechat.wechat.urllib.request.urlopen",
+                side_effect=upload_failure,
+            ):
+                try:
+                    _multipart_upload(upload_url, "media", Path(image.name))
+                except Exception as exc:
+                    upload_error = exc
+                else:
+                    self.fail("_multipart_upload did not raise")
+
+        self.assertIsInstance(upload_error, WechatError)
+        self.assertTrue(upload_error.retryable)
+        self.assertFalse(upload_error.outcome_unknown)
+        self.assertNotIn("secret-token", str(upload_error))
+        self.assertIn("/cgi-bin/material/add_material", str(upload_error))
+        self.assertIs(upload_error.__cause__, upload_failure)
+
     @patch("youtube_to_wechat.wechat.ssl._create_unverified_context", side_effect=AssertionError("insecure TLS"))
     @patch("youtube_to_wechat.wechat.ssl.create_default_context")
     @patch("youtube_to_wechat.wechat.urllib.request.urlopen")

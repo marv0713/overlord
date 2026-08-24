@@ -257,8 +257,18 @@ def build_draft_article(
 
 
 def _get_json(url: str) -> dict[str, Any]:
-    with urllib.request.urlopen(url, timeout=30, context=ssl.create_default_context()) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(url, timeout=30, context=ssl.create_default_context()) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        socket.timeout,
+        TimeoutError,
+        http.client.HTTPException,
+        ConnectionResetError,
+    ) as exc:
+        raise _transport_error(url, exc) from exc
 
 
 def _raise_api_error(data: dict[str, Any], action: str) -> None:
@@ -292,6 +302,28 @@ def _normalize_api_errcode(data: dict[str, Any], action: str) -> int:
 
 def _endpoint_path(url: str) -> str:
     return urllib.parse.urlsplit(url).path or "/"
+
+
+def _transport_error(url: str, exc: BaseException) -> WechatError:
+    endpoint = _endpoint_path(url)
+    if isinstance(exc, urllib.error.HTTPError):
+        return WechatError(
+            f"WeChat HTTP error {exc.code} for {endpoint}: {exc.reason}",
+            retryable=False,
+            outcome_unknown=exc.code >= 500,
+        )
+    if isinstance(exc, urllib.error.URLError):
+        safe_retry = isinstance(exc.reason, (socket.gaierror, ConnectionRefusedError))
+        return WechatError(
+            f"WeChat connection error for {endpoint}: {exc.reason}",
+            retryable=safe_retry,
+            outcome_unknown=not safe_retry,
+        )
+    return WechatError(
+        f"WeChat connection outcome unknown for {endpoint}: {exc}",
+        retryable=False,
+        outcome_unknown=True,
+    )
 
 
 def _require_mutation_id(data: dict[str, Any], key: str, action: str) -> str:
@@ -373,5 +405,15 @@ def _multipart_upload(url: str, field_name: str, file_path: Path) -> dict[str, A
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=60, context=ssl.create_default_context()) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=60, context=ssl.create_default_context()) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        socket.timeout,
+        TimeoutError,
+        http.client.HTTPException,
+        ConnectionResetError,
+    ) as exc:
+        raise _transport_error(url, exc) from exc

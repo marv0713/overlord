@@ -115,9 +115,10 @@ class WechatDraftPublisher:
         if not _env_bool(env.get("WECHAT_AUTO_PUBLISH"), default=False):
             return PublishResult(action="draft", media_id=media_id)
 
-        state = context.wechat_batch if context and context.wechat_batch else WechatBatchState(
-            mass_send_enabled=_env_bool(env.get("WECHAT_MASS_SEND"), default=True)
-        )
+        if context is None or context.wechat_batch is None:
+            return self._publish_created_draft(token, media_id)
+
+        state = context.wechat_batch
         if not state.mass_send_enabled or state.mass_send_attempts > 0:
             return self._publish_created_draft(token, media_id)
 
