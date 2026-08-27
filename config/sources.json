@@ -26,7 +26,7 @@
       "type": "youtube_channel",
       "name": "Motley Fool",
       "url": "https://www.youtube.com/@MotleyFool/videos",
-      "enabled": true,
+      "enabled": false,
       "series": "炼金投研",
       "priority": 30,
       "min_duration_seconds": 600,
