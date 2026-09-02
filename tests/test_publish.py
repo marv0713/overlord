@@ -520,6 +520,31 @@ class PublishTests(unittest.TestCase):
         sent = server.send_message.call_args.args[0]
         self.assertEqual(sent["From"], "from@example.com")
 
+    @patch("smtplib.SMTP_SSL")
+    def test_send_crash_email_delivers_alert(self, smtp_ssl):
+        publish_module.send_crash_email(
+            source_name="process_sources",
+            error_message="password authentication failed",
+            env={
+                "SMTP_HOST": "smtp.example.com",
+                "SMTP_PORT": "465",
+                "SMTP_USER": "bot@example.com",
+                "SMTP_PASSWORD": "secret",
+                "EMAIL_FROM": "bot@example.com",
+                "EMAIL_TO": "ops@example.com",
+            },
+        )
+
+        server = smtp_ssl.return_value.__enter__.return_value
+        server.login.assert_called_once_with("bot@example.com", "secret")
+        sent = server.send_message.call_args.args[0]
+        self.assertEqual(sent["To"], "ops@example.com")
+        self.assertIn("任务崩溃", sent["Subject"])
+        self.assertIn("password authentication failed", sent.get_content())
+
+    def test_send_crash_email_missing_env_does_not_raise(self):
+        publish_module.send_crash_email("process_sources", "boom", {})
+
 
 if __name__ == "__main__":
     unittest.main()

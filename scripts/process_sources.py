@@ -819,14 +819,18 @@ def main() -> int:
                     run_json_path=run_json_path,
                 )
 
-    except (OSError, ValueError, YtDlpError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    except Exception as exc:
+        import traceback as _tb
+        _tb.print_exc()
         try:
-            from youtube_to_wechat.publish import send_failure_alert
+            _env = load_env(Path(args.env)) if Path(args.env).exists() else {}
+            from youtube_to_wechat.publish import send_crash_email, send_failure_alert
+            _crash = f"{type(exc).__name__}: {exc}"
+            send_crash_email(source_name="process_sources", error_message=_crash, env=_env)
             send_failure_alert(
                 source_name="process_sources",
-                error_message=f"Fatal error: {exc}",
-                env=load_env(Path(args.env)) if Path(args.env).exists() else {},
+                error_message=f"Fatal error: {_crash}",
+                env=_env,
             )
         except Exception:
             pass
@@ -837,4 +841,23 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except Exception as exc:
+        import traceback as _tb
+        _tb.print_exc()
+        try:
+            from pathlib import Path as _Path
+            from youtube_to_wechat.publish import send_crash_email
+            from youtube_to_wechat.wechat import load_env
+            _env = load_env(_Path(".env")) if _Path(".env").exists() else {}
+            send_crash_email(
+                source_name="process_sources",
+                error_message=f"{type(exc).__name__}: {exc}",
+                env=_env,
+            )
+        except Exception:
+            pass
+        raise SystemExit(1)

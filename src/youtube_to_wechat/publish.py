@@ -339,48 +339,72 @@ class EmailPublisher:
         env: dict,
         context: PublishContext | None = None,
     ) -> None:
-        from_addr = env.get("EMAIL_FROM") or env.get("SMTP_FROM") or env.get("SMTP_USER")
-        required = {
-            "SMTP_HOST": env.get("SMTP_HOST"),
-            "SMTP_USER": env.get("SMTP_USER"),
-            "SMTP_PASSWORD": env.get("SMTP_PASSWORD"),
-            "EMAIL_TO": env.get("EMAIL_TO"),
-            "EMAIL_FROM/SMTP_FROM": from_addr,
-        }
-        missing = [key for key, value in required.items() if not value]
-        if missing:
-            print(f"[{source_name}] EmailPublisher: missing env {', '.join(missing)}.", file=sys.stderr)
-            return
-
         text = article_path.read_text(encoding="utf-8")
         title_match = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
         title = title_match.group(1).strip() if title_match else f"{source_name} 最新内容"
         subject = f"[{source_name}] {title}"
 
-        msg = EmailMessage()
-        msg["Subject"] = subject
-        msg["From"] = from_addr
-        msg["To"] = env["EMAIL_TO"]
-        msg.set_content(text)
-
-        host = env["SMTP_HOST"]
-        port = int(env.get("SMTP_PORT") or 465)
-        use_ssl = _env_bool(env.get("SMTP_USE_SSL"), default=(port == 465))
-        use_tls = _env_bool(env.get("SMTP_USE_TLS"), default=(port == 587))
         try:
-            if use_ssl:
-                with smtplib.SMTP_SSL(host, port, timeout=20) as smtp:
-                    smtp.login(env["SMTP_USER"], env["SMTP_PASSWORD"])
-                    smtp.send_message(msg)
-            else:
-                with smtplib.SMTP(host, port, timeout=20) as smtp:
-                    if use_tls:
-                        smtp.starttls()
-                    smtp.login(env["SMTP_USER"], env["SMTP_PASSWORD"])
-                    smtp.send_message(msg)
+            _deliver_email(subject, text, env)
             print(f"[{source_name}] EmailPublisher: email sent to {env['EMAIL_TO']}.")
         except Exception as e:
             print(f"[{source_name}] EmailPublisher Error: {e}", file=sys.stderr)
+
+
+def _deliver_email(subject: str, body: str, env: dict) -> None:
+    """Send a plain-text email through the SMTP settings in ``env``. Raises on failure."""
+    from_addr = env.get("EMAIL_FROM") or env.get("SMTP_FROM") or env.get("SMTP_USER")
+    required = {
+        "SMTP_HOST": env.get("SMTP_HOST"),
+        "SMTP_USER": env.get("SMTP_USER"),
+        "SMTP_PASSWORD": env.get("SMTP_PASSWORD"),
+        "EMAIL_TO": env.get("EMAIL_TO"),
+        "EMAIL_FROM/SMTP_FROM": from_addr,
+    }
+    missing = [key for key, value in required.items() if not value]
+    if missing:
+        raise ValueError(f"missing env {', '.join(missing)}")
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = env["EMAIL_TO"]
+    msg.set_content(body)
+
+    host = env["SMTP_HOST"]
+    port = int(env.get("SMTP_PORT") or 465)
+    use_ssl = _env_bool(env.get("SMTP_USE_SSL"), default=(port == 465))
+    use_tls = _env_bool(env.get("SMTP_USE_TLS"), default=(port == 587))
+    if use_ssl:
+        with smtplib.SMTP_SSL(host, port, timeout=20) as smtp:
+            smtp.login(env["SMTP_USER"], env["SMTP_PASSWORD"])
+            smtp.send_message(msg)
+    else:
+        with smtplib.SMTP(host, port, timeout=20) as smtp:
+            if use_tls:
+                smtp.starttls()
+            smtp.login(env["SMTP_USER"], env["SMTP_PASSWORD"])
+            smtp.send_message(msg)
+
+
+def send_crash_email(source_name: str, error_message: str, env: dict) -> None:
+    """Send a best-effort email alert when a whole run crashes.
+
+    Unlike per-item ``send_failure_alert`` (WeCom/PushPlus), this uses the SMTP
+    channel so a hard process crash still reaches the operator's mailbox.
+    """
+    subject = f"[{source_name}] ⚠️ 任务崩溃"
+    body = (
+        "Overlord 任务异常退出，未能正常处理内容。\n\n"
+        f"来源：{source_name}\n"
+        f"错误：{error_message}\n\n"
+        "请登录服务器查看日志（logs/cron.log）排查。"
+    )
+    try:
+        _deliver_email(subject, body, env)
+        print(f"[{source_name}] Crash alert email sent to {env.get('EMAIL_TO')}.")
+    except Exception as e:
+        print(f"[{source_name}] Crash alert email failed: {e}", file=sys.stderr)
 
 
 def send_failure_alert(
