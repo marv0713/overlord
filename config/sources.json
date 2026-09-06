@@ -35,6 +35,30 @@
     },
     {
       "type": "youtube_channel",
+      "name": "The Intrinsic Value Podcast",
+      "url": "https://www.youtube.com/@TheIntrinsicValuePodcast/videos",
+      "enabled": true,
+      "series": "炼金投研",
+      "priority": 5,
+      "min_duration_seconds": 600,
+      "writer_profile": "intrinsic-value-auto",
+      "compare_evaluation": "none",
+      "destinations": ["wechat_draft"]
+    },
+    {
+      "type": "youtube_channel",
+      "name": "NavalR",
+      "url": "https://www.youtube.com/@NavalR",
+      "enabled": true,
+      "series": "",
+      "priority": 50,
+      "min_duration_seconds": 300,
+      "writer_profile": "dehydrate",
+      "compare_evaluation": "none",
+      "destinations": ["pushplus"]
+    },
+    {
+      "type": "youtube_channel",
       "name": "Tucker Carlson",
       "url": "https://www.youtube.com/@TuckerCarlson/videos",
       "enabled": true,
@@ -56,6 +80,31 @@
       "writer_profile": "dehydrate",
       "compare_evaluation": "none",
       "destinations": ["email"]
+    },
+    {
+      "type": "youtube_channel",
+      "name": "All-In Podcast",
+      "url": "https://www.youtube.com/@allin/videos",
+      "enabled": true,
+      "series": "",
+      "priority": 62,
+      "min_duration_seconds": 300,
+      "writer_profile": "dehydrate",
+      "compare_evaluation": "none",
+      "destinations": ["email"]
+    },
+    {
+      "type": "youtube_channel",
+      "name": "Invest Like The Best",
+      "url": "https://www.youtube.com/@ILTB_Podcast/videos",
+      "enabled": true,
+      "series": "",
+      "priority": 63,
+      "min_duration_seconds": 300,
+      "writer_profile": "dehydrate",
+      "compare_evaluation": "none",
+      "destinations": ["email"]
     }
   ]
 }
+
