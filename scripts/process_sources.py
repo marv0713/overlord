@@ -113,6 +113,19 @@ def process_video_url(
         except YtDlpError as exc:
             run["audio_status"] = "error"
             run["audio_error"] = str(exc)
+    elif not transcript:
+        # Defense-in-depth: if subtitles failed and audio was skipped, try downloading audio for Whisper fallback
+        try:
+            audio_path = download_audio(
+                url,
+                output_base / video_id / "audio",
+                no_check_certificates=no_check_certificates,
+            )
+            run["audio_status"] = "ok"
+            run["audio_path"] = str(audio_path) if audio_path else ""
+        except YtDlpError as exc:
+            run["audio_status"] = "error"
+            run["audio_error"] = str(exc)
 
     if run["transcript_status"] != "ok" and run["audio_status"] != "ok":
         run["status"] = "error"
