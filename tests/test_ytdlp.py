@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
@@ -5,8 +6,10 @@ from unittest.mock import Mock, patch
 from youtube_to_wechat.ytdlp import (
     DEFAULT_SUBTITLE_LANGUAGES,
     download_audio,
+    fetch_transcript,
     ytdlp_command,
     ytdlp_options,
+    YtDlpError,
 )
 
 
@@ -56,6 +59,30 @@ class YtDlpCommandTests(unittest.TestCase):
         self.assertIn("-f", command)
         self.assertIn("bestaudio/best", command)
         self.assertIn("--no-check-certificates", command)
+
+    @patch("youtube_to_wechat.ytdlp.subprocess.run")
+    @patch("youtube_to_wechat.ytdlp.ytdlp_command", return_value=["yt-dlp"])
+    def test_fetch_transcript_succeeds_when_vtt_present_despite_nonzero_returncode(self, _cmd, run):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work_dir = Path(tmpdir)
+            # Simulate yt-dlp downloading one subtitle file but exiting with non-zero due to second sub language failing
+            vtt_file = work_dir / "test.vtt"
+            vtt_file.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello world\n")
+            run.return_value = Mock(returncode=1, stderr="ERROR: Unable to download video subtitles for 'en'")
+
+            transcript = fetch_transcript("https://example.com/watch?v=123", work_dir)
+            self.assertIn("Hello world", transcript)
+
+    @patch("youtube_to_wechat.ytdlp.subprocess.run")
+    @patch("youtube_to_wechat.ytdlp.ytdlp_command", return_value=["yt-dlp"])
+    def test_fetch_transcript_raises_when_no_vtt_and_nonzero_returncode(self, _cmd, run):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work_dir = Path(tmpdir)
+            run.return_value = Mock(returncode=1, stderr="ERROR: 429 Too Many Requests")
+
+            with self.assertRaises(YtDlpError) as ctx:
+                fetch_transcript("https://example.com/watch?v=123", work_dir)
+            self.assertIn("429 Too Many Requests", str(ctx.exception))
 
 
 if __name__ == "__main__":

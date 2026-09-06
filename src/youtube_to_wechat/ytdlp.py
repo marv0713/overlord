@@ -78,14 +78,14 @@ def fetch_transcript(
         capture_output=True,
         text=True,
     )
+    vtt_files = sorted(work_dir.glob("*.vtt"))
+    if vtt_files:
+        return clean_vtt(vtt_files[0].read_text(errors="ignore"))
+
     if result.returncode != 0:
         raise YtDlpError(result.stderr.strip() or "yt-dlp failed while fetching subtitles")
 
-    vtt_files = sorted(work_dir.glob("*.vtt"))
-    if not vtt_files:
-        raise YtDlpError("No subtitles were available for this video.")
-
-    return clean_vtt(vtt_files[0].read_text(errors="ignore"))
+    raise YtDlpError("No subtitles were available for this video.")
 
 
 def download_audio(url: str, work_dir: Path, no_check_certificates: bool = False) -> Optional[Path]:
